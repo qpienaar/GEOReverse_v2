@@ -46,6 +46,47 @@ def get_universe_containers(levels, Universes):
     return Ucontainer
 
 
+def get_container_box(ContainerCell):
+    if ContainerCell.shape is not None:
+        external_box = myBox(ContainerCell.shape.BoundBox, "Forward")
+        if ContainerCell.CurrentTR:
+            external_box.Box = external_box.Box.transformed(ContainerCell.CurrentTR.inverse())
+    else:
+        external_box = ContainerCell.externalBox
+    return external_box
+
+
+def get_pass_through_box(cell, parent_box):
+    if cell.latticeBox is None:
+        return parent_box
+
+    if cell.TRFL and parent_box is not None and parent_box.Box is not None:
+        parent_box = myBox(parent_box.Box.transformed(cell.TRFL.inverse()), parent_box.Orientation)
+
+    box = FreeCAD.BoundBox(cell.latticeBox)
+    if parent_box is not None and parent_box.Box is not None:
+        if box.XLength <= 1e-12:
+            box.XMin = parent_box.Box.XMin
+            box.XMax = parent_box.Box.XMax
+        if box.YLength <= 1e-12:
+            box.YMin = parent_box.Box.YMin
+            box.YMax = parent_box.Box.YMax
+        if box.ZLength <= 1e-12:
+            box.ZMin = parent_box.Box.ZMin
+            box.ZMax = parent_box.Box.ZMax
+
+    lattice_box = myBox(box, "Forward")
+    if parent_box is not None:
+        lattice_box.mult(parent_box)
+    return lattice_box
+
+
+def get_boundbox_enlarge(ContainerCell):
+    if getattr(ContainerCell, "latticeBox", None) is not None:
+        return 0
+    return 0.2
+
+
 def BuildUniverseCells(startInfo, ContainerCell, AllUniverses, universeCut=True):
 
     CADUniverse = []
@@ -65,12 +106,7 @@ def BuildUniverseCells(startInfo, ContainerCell, AllUniverses, universeCut=True)
                 continue
 
             cell = NTcell.copy()
-            if ContainerCell.shape is not None:
-                external_box = myBox(ContainerCell.shape.BoundBox, "Forward")
-                if ContainerCell.CurrentTR:
-                    external_box.Box = external_box.Box.transformed(ContainerCell.CurrentTR.inverse())
-            else:
-                external_box = ContainerCell.externalBox
+            external_box = get_pass_through_box(cell, get_container_box(ContainerCell))
 
             cell.externalBox = external_box
             cell.boundBox = external_box
@@ -88,55 +124,39 @@ def BuildUniverseCells(startInfo, ContainerCell, AllUniverses, universeCut=True)
             fails.extend(ff)
             continue
 
-        if NTcell.shape:
-            buildShape = False
-            if ContainerCell.CurrentTR:
-                cell = NTcell.copy()
-                cell.transformSolid(ContainerCell.CurrentTR)
+        cell = NTcell.copy()
+        if type(cell.definition) is not BoolSequence:
+            cell.definition = BoolSequence(cell.definition.str)
+
+        external_box = get_container_box(ContainerCell)
+
+        debug = False
+        enlarge = get_boundbox_enlarge(ContainerCell)
+        if debug:
+            cell.build_BoundBox(external_box, enlarge=enlarge)
+            if cell.boundBox.Orientation == "Forward" and cell.boundBox.Box is None:
+                cell.shape = None
             else:
-                cell = NTcell
+                if cell.boundBox.Orientation == "Forward":
+                    cell.externalBox = cell.boundBox
+                cell.buildShape(simplify=False)
         else:
-            CTRF = None
-            buildShape = True
-
-        if buildShape:
-            if type(NTcell.definition) is not BoolSequence:
-                NTcell.definition = BoolSequence(NTcell.definition.str)
-
-            if ContainerCell.shape is not None:
-                external_box = myBox(ContainerCell.shape.BoundBox, "Forward")
-                if ContainerCell.CurrentTR:
-                    external_box.Box = external_box.Box.transformed(ContainerCell.CurrentTR.inverse())
-            else:
-                external_box = ContainerCell.externalBox
-
-            debug = False
-            if debug:
-                NTcell.build_BoundBox(external_box, enlarge=0.2)
-                if NTcell.boundBox.Orientation == "Forward" and NTcell.boundBox.Box is None:
-                    NTcell.shape = None
+            try:
+                cell.build_BoundBox(external_box, enlarge=enlarge)
+                if cell.boundBox.Orientation == "Forward" and cell.boundBox.Box is None:
+                    cell.shape = None
                 else:
-                    if NTcell.boundBox.Orientation == "Forward":
-                        NTcell.externalBox = NTcell.boundBox
-                    NTcell.buildShape(simplify=False)
-            else:
-                try:
-                    NTcell.build_BoundBox(external_box, enlarge=0.2)
-                    if NTcell.boundBox.Orientation == "Forward" and NTcell.boundBox.Box is None:
-                        NTcell.shape = None
-                    else:
-                        if NTcell.boundBox.Orientation == "Forward":
-                            NTcell.externalBox = NTcell.boundBox
-                        NTcell.buildShape(simplify=False)
-                except:
-                    fails.append(NTcell.name)
+                    if cell.boundBox.Orientation == "Forward":
+                        cell.externalBox = cell.boundBox
+                    cell.buildShape(simplify=False)
+            except:
+                fails.append(cell.name)
 
-            if NTcell.shape is None:
-                continue
+        if cell.shape is None:
+            continue
 
-            cell = NTcell.copy()
-            if ContainerCell.CurrentTR:
-                cell.transformSolid(ContainerCell.CurrentTR)
+        if ContainerCell.CurrentTR:
+            cell.transformSolid(ContainerCell.CurrentTR)
 
         if universeCut and ContainerCell.shape:
             cell.shape = interferencia(ContainerCell, cell)

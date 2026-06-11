@@ -110,6 +110,7 @@ class LatticeCard:
         while len(translation) < 3:
             translation.append(0.0)
         cell.TR = _translation_matrix(translation)
+        cell.externalBox = _lattice_element_box(pitch)
         return cell
 
 
@@ -211,4 +212,18 @@ def _translation_matrix(translation, scale=10.0):
         0,
         0,
         1,
+    )
+
+
+def _lattice_element_box(pitch, scale=10.0):
+    half_pitch = [0.5 * value * scale for value in pitch]
+    while len(half_pitch) < 3:
+        half_pitch.append(0.0)
+    return FreeCAD.BoundBox(
+        -half_pitch[0],
+        -half_pitch[1],
+        -half_pitch[2],
+        half_pitch[0],
+        half_pitch[1],
+        half_pitch[2],
     )

@@ -35,6 +35,7 @@ class CadCell:
             self.externalBox = None
             self.solid_plane = None
             self.boundBox = None
+            self.latticeBox = None
 
         else:
             self.surfaces = None
@@ -55,6 +56,7 @@ class CadCell:
             else:
                 self.surfaceList = self.definition.get_surfaces_numbers()
             self.externalBox = None
+            self.latticeBox = getattr(stringCell, "externalBox", None)
             self.solid_plane = None
             self.boundBox = None
 
@@ -65,6 +67,7 @@ class CadCell:
         cpCell.surfaceList = self.surfaceList[:]
         cpCell.externalBox = self.externalBox
         cpCell.boundBox = self.boundBox
+        cpCell.latticeBox = self.latticeBox
         cpCell.surfaces = {}
         if self.surfaces is not None:
             for name, s in self.surfaces.items():
@@ -169,10 +172,12 @@ class CadCell:
     def transformSolid(self, matrix, reverse=False):
         if not self.shape:
             return
+        shape = self.shape.copy()
         if reverse:
-            self.shape = self.shape.transformGeometry(matrix.inverse())
+            shape.transformShape(matrix.inverse())
         else:
-            self.shape = self.shape.transformGeometry(matrix)
+            shape.transformShape(matrix)
+        self.shape = shape
 
     def transformSurfaces(self, matrix):
         for s in self.surfaces.values():
