@@ -4,7 +4,7 @@ import typing
 
 from pathlib import Path
 
-from .Modules.buildCAD import makeTree, AssignSurfaceToCell, BuildUniverseCells
+from .Modules.buildCAD import makeTree, makeMaterialTree, AssignSurfaceToCell, BuildUniverseCells
 from .Modules.Utils.booleanFunction import BoolSequence
 from .Modules.Utils.boundBox import BoxSettings
 from .Modules.Objects import CadCell
@@ -240,7 +240,7 @@ class CsgToCad:
         CADobj.Label = barename
 
         for CAD in self.buildCAD_list:
-            CADobj.addObject(makeTree(CADdoc, CAD))
+            CADobj.addObject(makeMaterialTree(CADdoc, CAD))
 
         Import.export(CADdoc.Objects[0:1], output_filename + suffix)
         CADdoc.saveAs(f"{output_filename}.FCStd")

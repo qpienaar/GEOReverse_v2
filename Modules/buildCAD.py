@@ -203,3 +203,36 @@ def makeTree(CADdoc, CADCells):
         groupObj.addObject(groupMatObj)
 
     return groupObj
+
+
+def iterLeafCells(CADCells):
+    if isinstance(CADCells, tuple):
+        for c in CADCells[1]:
+            yield from iterLeafCells(c)
+    elif isinstance(CADCells, list):
+        for c in CADCells:
+            yield from iterLeafCells(c)
+    else:
+        yield CADCells
+
+
+def makeMaterialTree(CADdoc, CADCells):
+    label = CADCells[0]
+    groupObj = CADdoc.addObject("App::Part", "Materials")
+    groupObj.Label = f"Universe_{label[1]}_Container_{label[0]}_Fused"
+
+    materialShapes = {}
+    for cell in iterLeafCells(CADCells):
+        if cell.shape is None:
+            continue
+        if cell.MAT not in materialShapes:
+            materialShapes[cell.MAT] = []
+        materialShapes[cell.MAT].append(cell.shape)
+
+    for mat, shapes in sorted(materialShapes.items()):
+        featObj = CADdoc.addObject("Part::FeaturePython", f"material_{mat}")
+        featObj.Label = f"Material_{mat}"
+        featObj.Shape = FuseSolid(shapes)
+        groupObj.addObject(featObj)
+
+    return groupObj
