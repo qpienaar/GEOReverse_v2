@@ -456,7 +456,8 @@ def gq2cyl(x):
     # Ax2+By2+Cz2+Dxy+Eyz+Fxz+Gx+Hy+Jz+K=0
     # x.T*M*x + b.T*x + K = 0
     minWTol = 5.0e-2
-    minRTol = 1.0e-3
+    # 2026-06-23: relax tolerance for near-circular cylinder-like quadrics.
+    minRTol = 2.0e-3
     # minRTol=3.e-1
     # lx = np.array(x)
     tp = ""

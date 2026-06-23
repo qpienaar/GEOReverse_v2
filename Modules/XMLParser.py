@@ -194,7 +194,8 @@ def _get_int_values(card, name):
     return [int(value) for value in _get_values(card, name)]
 
 
-def _translation_matrix(translation, scale=10.0):
+def _translation_matrix(translation, scale=10.0): 
+    # scale is for unit conversion from mm to cm
     return FreeCAD.Matrix(
         1,
         0,
@@ -216,6 +217,7 @@ def _translation_matrix(translation, scale=10.0):
 
 
 def _lattice_element_box(pitch, scale=10.0):
+    # scale is for unit conversion from mm to cm
     half_pitch = [0.5 * value * scale for value in pitch]
     while len(half_pitch) < 3:
         half_pitch.append(0.0)
