@@ -18,6 +18,28 @@ Solid construction and export are handled primarily by:
 
 The CLI entry point is `GEOReverse/scripts/geouned_csgtocad.py`.
 
+## Workflow Summary
+
+At a high level, the workflow is:
+
+1. Instantiate `CsgToCad`.
+2. Read the input CSG file and select the parser for MCNP or OpenMC XML.
+3. Parse surface definitions into internal geometric surface objects.
+4. Parse cells and build the universe/fill hierarchy.
+5. For OpenMC XML, expand lattice definitions into synthetic fill/container cells when present.
+6. Apply any cell or material filters.
+7. Convert selected cells into `CadCell` objects and assign their referenced surfaces.
+8. Start from the root universe or a specific container cell.
+9. Recurse through the universe hierarchy to:
+   - build bounding boxes
+   - construct solids from boolean cell definitions
+   - apply transforms
+   - clip solids to container geometry where required
+   - descend into filled sub-universes
+10. Collect the resulting solids into the CAD tree.
+11. Build the FreeCAD document structure.
+12. Export the result to `.stp`/`.step` and `.FCStd`.
+
 ## End-to-End Workflow
 
 ### 1. Entry point and configuration
