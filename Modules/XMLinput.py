@@ -1,6 +1,7 @@
 import math
 import os
 import re
+import warnings
 import xml.etree.ElementTree as ET
 
 import FreeCAD
@@ -168,7 +169,7 @@ class XmlInput:
         for c in self.__inputcards__:
             if c.type != "surface":
                 continue
-            surf_cards[c.name] = (c.stype, c.scoefs, number)
+            surf_cards[c.name] = (c.stype, c.scoefs, number, c.source_xml)
             number += 1
 
         self.surfaces = Get_primitive_surfaces(surf_cards, scale)
@@ -324,6 +325,7 @@ def Get_primitive_surfaces(mcnp_surfaces, scale=10.0):
         MCNPtype = mcnp_surfaces[Sid][0]
         MCNPparams = mcnp_surfaces[Sid][1]
         number = mcnp_surfaces[Sid][2]
+        source_xml = mcnp_surfaces[Sid][3]
 
         params = []
         Stype = None
@@ -407,7 +409,9 @@ def Get_primitive_surfaces(mcnp_surfaces, scale=10.0):
 
         elif MCNPtype == "quadric":
             Qparams = tuple(MCNPparams[0:10])
-            Stype, quadric = gq2cyl(Qparams)
+            Stype, quadric = gq2cyl(
+                Qparams, surface_id=Sid, source_xml=source_xml
+            )
 
             if Stype == "cylinder":
                 p = FreeCAD.Vector(quadric[0:3])
@@ -451,7 +455,7 @@ def Get_primitive_surfaces(mcnp_surfaces, scale=10.0):
     return surfaces
 
 
-def gq2cyl(x):
+def gq2cyl(x, surface_id=None, source_xml=None):
     # Conversion de GQ a Cyl
     # Ax2+By2+Cz2+Dxy+Eyz+Fxz+Gx+Hy+Jz+K=0
     # x.T*M*x + b.T*x + K = 0
@@ -495,7 +499,19 @@ def gq2cyl(x):
 
         rv[0:3] = x0  # Punto del eje
         rv[3:6] = P[:, iaxis]  # Vector director
-        rv[6] = np.sqrt(k / sw[1])  # Radio
+        with np.errstate(divide="ignore", invalid="ignore"):
+            radius_squared = k / sw[1]
+        if not np.isfinite(radius_squared) or radius_squared < 0:
+            warnings.warn(
+                f"Invalid cylinder radius for OpenMC surface {surface_id}: "
+                f"radius_squared={radius_squared!r}\n"
+                f"Original XML: {source_xml}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            rv[6] = np.nan
+        else:
+            rv[6] = math.sqrt(radius_squared)
     # Test for cone (incomplete, returns empty data list)
     elif np.sign(sw[0]) != np.sign(sw[2]):  # maybe cone
         tp = "cone"
@@ -518,7 +534,12 @@ def gq2cyl(x):
             # tp = 'not found - hyperboloid'
             # rv = [0]
             # force cone surface
-            print("Force cone surface")
+            warnings.warn(
+                f"Force cone surface for OpenMC surface {surface_id}\n"
+                f"Original XML: {source_xml}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
             tp = "cone"
             rv[0:3] = x0  # vertex point
             rv[3:6] = P[:, iaxis]  # axis direction

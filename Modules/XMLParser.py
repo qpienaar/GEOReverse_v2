@@ -1,3 +1,5 @@
+import xml.etree.ElementTree as ET
+
 import FreeCAD
 
 from .remh import Cline
@@ -115,10 +117,13 @@ class LatticeCard:
 
 
 class SurfCard:
-    def __init__(self, data):
+    def __init__(self, element):
 
         self.type = "surface"
-        self.processData(data)
+        self.source_xml = ET.tostring(
+            element, encoding="unicode", short_empty_elements=True
+        ).strip()
+        self.processData(element.attrib)
 
     def processData(self, data):
         self.name = int(data["id"])
@@ -145,7 +150,7 @@ def process_card(card, cell_id_allocator=None):
         return CellCard(card.attrib)
 
     elif ctype == "surface":
-        return SurfCard(card.attrib)
+        return SurfCard(card)
 
     elif ctype == "lattice":
         if cell_id_allocator is None:
