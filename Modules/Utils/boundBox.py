@@ -180,8 +180,14 @@ class myBox:
         return True
 
 
+BOUND_BOX_SURFACE_TYPES = frozenset(
+    {"plane", "cylinder", "cone", "sphere", "torus", "paraboloid", "box"}
+)
+
+
 class solid_plane_box:
     def __init__(self, NTCell=None, outbox=None):
+        self.conservative_boundbox = False
         if NTCell is None:
             settings = BoxSettings()
             self.planes = None
@@ -192,26 +198,49 @@ class solid_plane_box:
             self.universe_box = settings.universe_radius
             self.orientation = None
         else:
-            test_orientation = "Forward"
             self.insolid_tolerance = NTCell.settings.insolid_tolerance
             self.universe_box = NTCell.settings.universe_box
             self.surfaces = NTCell.surfaces
-            plane_dict, surf_to_plane_dict = quadric_to_plane(NTCell.definition, NTCell.surfaces, test_orientation)
-            self.planes = plane_dict
-            self.surf_to_plane = surf_to_plane_dict
-            self.definition = plane_definition(NTCell.definition.copy(), surf_to_plane_dict, test_orientation)
-            self.orientation = self.get_box_orientation()
+            self.outBox = outbox if outbox else self.universe_box
 
-            if test_orientation != self.orientation:
-                plane_dict, surf_to_plane_dict = quadric_to_plane(NTCell.definition, NTCell.surfaces, self.orientation)
+            unsupported_types = {
+                surface.type
+                for surface in self.surfaces.values()
+                if surface.type not in BOUND_BOX_SURFACE_TYPES
+            }
+            if unsupported_types:
+                # A missing plane approximation must never cause a surface to
+                # disappear from the bound calculation.  Use the current
+                # enclosing box until an analytical approximation is added.
+                self.conservative_boundbox = True
+                self.planes = {}
+                self.surf_to_plane = {}
+                self.definition = NTCell.definition.copy()
+                self.orientation = self.outBox.Orientation
+            else:
+                test_orientation = "Forward"
+                plane_dict, surf_to_plane_dict = quadric_to_plane(
+                    NTCell.definition, NTCell.surfaces, test_orientation
+                )
                 self.planes = plane_dict
                 self.surf_to_plane = surf_to_plane_dict
-                self.definition = plane_definition(NTCell.definition.copy(), surf_to_plane_dict, self.orientation)
+                self.definition = plane_definition(
+                    NTCell.definition.copy(), surf_to_plane_dict, test_orientation
+                )
+                self.orientation = self.get_box_orientation()
 
-        if outbox:
-            self.outBox = outbox
-        else:
-            self.outBox = self.universe_box
+                if test_orientation != self.orientation:
+                    plane_dict, surf_to_plane_dict = quadric_to_plane(
+                        NTCell.definition, NTCell.surfaces, self.orientation
+                    )
+                    self.planes = plane_dict
+                    self.surf_to_plane = surf_to_plane_dict
+                    self.definition = plane_definition(
+                        NTCell.definition.copy(), surf_to_plane_dict, self.orientation
+                    )
+
+        if NTCell is None:
+            self.outBox = outbox if outbox else self.universe_box
 
     def export_surf_planes(self, box):
 
@@ -261,6 +290,7 @@ class solid_plane_box:
         cpsol.universe_box = self.universe_box
         cpsol.outBox = self.outBox
         cpsol.orientation = self.orientation
+        cpsol.conservative_boundbox = self.conservative_boundbox
 
         if newdefinition is not None:
             if rebuild:
@@ -282,6 +312,9 @@ class solid_plane_box:
         return cpsol
 
     def get_boundBox(self, enlarge=0):
+        if self.conservative_boundbox:
+            return myBox(self.outBox)
+
         mBox = self.build_box_depth()
         bBox = mBox.Box
         if bBox is not None and enlarge > 0:

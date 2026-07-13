@@ -2,11 +2,10 @@
 #   Conversion to MCNP v0.0
 #   Only one solid and planar surfaces
 #
-import math
-
 import BOPTools.SplitAPI
 import FreeCAD
 
+from ..splitFunction import surface_side
 from .booleanFunction import BoolSequence
 
 BoolVals = (None, True, False)
@@ -491,58 +490,6 @@ def divide_box(Box):
 
 
 def check_sign(solid, surf):
-
     point = point_inside(solid)
-
-    if surf.type == "plane":
-        normal, d = surf.params
-        r = point - d * normal
-        if normal.dot(r) > 0:
-            return 1
-        else:
-            return -1
-
-    elif surf.type == "cylinder":
-        center, axis, radius = surf.params
-        r = point - center
-        L2 = r.Length * r.Length
-        z = axis.dot(r)
-        z2 = z * z
-        R2 = radius * radius
-        if L2 - z2 > R2:
-            return 1
-        else:
-            return -1
-
-    elif surf.type == "sphere":
-        center, radius = surf.params
-        r = point - center
-        if r.Length > radius:
-            return 1
-        else:
-            return -1
-
-    elif surf.type == "cone":
-        apex, axis, t, dbl = surf.params
-        r = point - apex
-        r.normalize()
-        z = round(axis.dot(r), 15)
-        alpha = math.acos(z)
-
-        if alpha > math.atan(t):
-            return 1
-        else:
-            return -1
-
-    elif surf.type == "torus":
-        center, axis, Ra, R = surf.params
-        r = point - center
-        v = axis.cross(r)
-        if v.Length > 1e-8:
-            v.normalize()
-            t = v.cross(axis)
-            r = r + t * Ra
-        if r.Length > R:
-            return 1
-        else:
-            return -1
+    value = surface_side(point, surf)
+    return 1 if value > 0 else -1

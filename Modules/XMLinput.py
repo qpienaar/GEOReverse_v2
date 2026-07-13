@@ -8,7 +8,21 @@ import FreeCAD
 import numpy as np
 from numpy import linalg as LA
 
-from .Objects import CadCell, Cone, Cylinder, Plane, Sphere, Torus
+from .Objects import (
+    CadCell,
+    Cone,
+    Cylinder,
+    Ellipsoid,
+    EllipticCone,
+    EllipticCylinder,
+    HyperbolicCylinder,
+    Hyperboloid,
+    Paraboloid,
+    Plane,
+    Sphere,
+    Torus,
+)
+from .MCNPinput import gq2params
 from .XMLParser import get_cards
 
 
@@ -414,29 +428,76 @@ def Get_primitive_surfaces(mcnp_surfaces, scale=10.0):
             )
 
             if Stype == "cylinder":
-                p = FreeCAD.Vector(quadric[0:3])
-                v = FreeCAD.Vector(quadric[3:6])
-                R = quadric[6]
+                p, v, R = quadric
                 if scale != 1.0:
                     R *= scale
                     p = p.multiply(scale)
 
                 params = (p, v, R)
 
+            elif Stype == "cylinder_elliptic":
+                p, v, radii, raxes = quadric
+                if scale != 1.0:
+                    radii[0] *= scale
+                    radii[1] *= scale
+                    p = p.multiply(scale)
+                params = (p, v, radii, raxes)
+
+            elif Stype == "cylinder_hyperbolic":
+                p, v, radii, raxes = quadric
+                if scale != 1.0:
+                    radii[0] *= scale
+                    radii[1] *= scale
+                    p = p.multiply(scale)
+                params = (p, v, radii, raxes)
+
             elif Stype == "cone":
-                p = FreeCAD.Vector(quadric[0:3])
-                v = FreeCAD.Vector(quadric[3:6])
-                t = quadric[6]
-                dblsht = quadric[7]
+                p, v, t, dblsht = quadric
                 if scale != 1.0:
                     p = p.multiply(scale)
 
                 params = (p, v, t, dblsht)
 
+            elif Stype == "cone_elliptic":
+                p, v, Ra, radii, raxes, dblsht = quadric
+                if scale != 1.0:
+                    Ra *= scale
+                    radii[0] *= scale
+                    radii[1] *= scale
+                    p = p.multiply(scale)
+                params = (p, v, Ra, radii, raxes, dblsht)
+
+            elif Stype == "hyperboloid":
+                p, v, radii, raxes, onesht = quadric
+                if scale != 1.0:
+                    radii[0] *= scale
+                    radii[1] *= scale
+                    p = p.multiply(scale)
+                params = (p, v, radii, raxes, onesht)
+
+            elif Stype == "ellipsoid":
+                p, v, radii, raxes = quadric
+                if scale != 1.0:
+                    radii[0] *= scale
+                    radii[1] *= scale
+                    p = p.multiply(scale)
+                params = (p, v, radii, raxes)
+
+            elif Stype == "paraboloid":
+                p, v, focal = quadric
+                if scale != 1.0:
+                    focal *= scale
+                    p = p.multiply(scale)
+                params = (p, v, focal)
+
             else:
-                print(Stype)
+                warnings.warn(
+                    f"Unsupported OpenMC quadric classification {Stype!r} "
+                    f"for surface {Sid}\nOriginal XML: {source_xml}",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
                 params = None
-        #                get_quadric_surface(params)
 
         if Stype == "plane":
             surfaces[Sid] = Plane(Sid, number, params)
@@ -444,8 +505,20 @@ def Get_primitive_surfaces(mcnp_surfaces, scale=10.0):
             surfaces[Sid] = Sphere(Sid, number, params)
         elif Stype == "cylinder":
             surfaces[Sid] = Cylinder(Sid, number, params)
+        elif Stype == "cylinder_elliptic":
+            surfaces[Sid] = EllipticCylinder(Sid, number, params)
+        elif Stype == "cylinder_hyperbolic":
+            surfaces[Sid] = HyperbolicCylinder(Sid, number, params)
         elif Stype == "cone":
             surfaces[Sid] = Cone(Sid, number, params)
+        elif Stype == "cone_elliptic":
+            surfaces[Sid] = EllipticCone(Sid, number, params)
+        elif Stype == "hyperboloid":
+            surfaces[Sid] = Hyperboloid(Sid, number, params)
+        elif Stype == "ellipsoid":
+            surfaces[Sid] = Ellipsoid(Sid, number, params)
+        elif Stype == "paraboloid":
+            surfaces[Sid] = Paraboloid(Sid, number, params)
         elif Stype == "torus":
             surfaces[Sid] = Torus(Sid, number, params)
         else:
@@ -455,7 +528,7 @@ def Get_primitive_surfaces(mcnp_surfaces, scale=10.0):
     return surfaces
 
 
-def gq2cyl(x, surface_id=None, source_xml=None):
+def _legacy_gq2cyl(x, surface_id=None, source_xml=None):
     # Conversion de GQ a Cyl
     # Ax2+By2+Cz2+Dxy+Eyz+Fxz+Gx+Hy+Jz+K=0
     # x.T*M*x + b.T*x + K = 0
@@ -555,3 +628,23 @@ def gq2cyl(x, surface_id=None, source_xml=None):
         tp = "not found - unknown"
         rv = [0]
     return tp, rv
+
+
+def gq2cyl(x, surface_id=None, source_xml=None):
+    """Classify an OpenMC quadric using the complete MCNP GQ pipeline.
+
+    OpenMC and MCNP use the same ten-coefficient ordering for general
+    quadrics.  Keep the legacy OpenMC function name while returning the same
+    canonical surface types and parameter layouts as the MCNP importer.
+    """
+    try:
+        return gq2params(x)
+    except Exception as exc:
+        warnings.warn(
+            f"Failed to classify OpenMC quadric surface {surface_id}: {exc}\n"
+            f"Falling back to the legacy cylinder/cone classifier.\n"
+            f"Original XML: {source_xml}",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return _legacy_gq2cyl(x, surface_id=surface_id, source_xml=source_xml)
