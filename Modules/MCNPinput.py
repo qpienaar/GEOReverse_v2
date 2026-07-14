@@ -1276,7 +1276,7 @@ def gq2params(x):
     XD = X @ vect  # X in diagonalised base
 
     # Treat eigenvalues small relative to the largest eigenvalue as zero.
-    relative_tolerance = 1e-10
+    relative_tolerance = 1e-15
     cutoff = relative_tolerance * np.max(np.abs(eVal))
     nonzero = np.abs(eVal) > cutoff
 
