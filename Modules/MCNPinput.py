@@ -1273,11 +1273,21 @@ def gq2params(x):
 
     # eigenValues and Vector
     eVal, vect = LA.eigh(mat3)
-    XD = np.matmul(X, vect)  # X in diagonalised base
+    XD = X @ vect  # X in diagonalised base
 
-    Dinv = np.where(abs(eVal) < 1e-8, eVal, 1 / eVal)  # get inverse eigen value where eigen< 1e-8
-    zero = (abs(eVal) < 1e-8).nonzero()  # index in eigen value vector where eigen < 1e-8
-    zero = zero[0]  # nonzero return a tuple with array containing the nonzero indexes
+    # Treat eigenvalues small relative to the largest eigenvalue as zero.
+    relative_tolerance = 1e-10
+    cutoff = relative_tolerance * np.max(np.abs(eVal))
+    nonzero = np.abs(eVal) > cutoff
+
+    # Normalize insignificant values so downstream exact-zero checks agree with
+    # the tolerance used for the pseudoinverse.
+    eVal[~nonzero] = 0.0
+
+    Dinv = np.zeros_like(eVal)
+    np.divide(1.0, eVal, out=Dinv, where=nonzero)
+
+    zero = np.flatnonzero(~nonzero)
     TD = -XD * Dinv  # Translation vector in diagonalized base
 
     k = np.matmul(TD, XD) + x[9]
