@@ -130,7 +130,7 @@ def BuildUniverseCells(startInfo, ContainerCell, AllUniverses, universeCut=True)
 
         external_box = get_container_box(ContainerCell)
 
-        debug = False
+        debug = True
         enlarge = get_boundbox_enlarge(ContainerCell)
         if debug:
             cell.build_BoundBox(external_box, enlarge=enlarge)
