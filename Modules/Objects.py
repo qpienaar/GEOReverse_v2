@@ -167,10 +167,6 @@ class CadCell:
 
     def buildSurfaceShape(self, boundBox):
         for s in self.surfaces.values():
-            print(
-                f"Building cell {self.name}, "
-                f"surface {s.label}, type {s.type}, params {s.params}"
-            )
             s.buildShape(boundBox)
 
     def transformSolid(self, matrix, reverse=False):
