@@ -2,7 +2,7 @@ import xml.etree.ElementTree as ET
 
 import FreeCAD
 
-from .remh import Cline
+from .remh import Cline, remove_complementary_groups
 
 
 class CellCard:
@@ -32,7 +32,8 @@ class CellCard:
             self.FILL = None
 
         if "region" in data.keys():
-            self.geom = Cline(data["region"].replace("|", ":"))
+            region = Cline(data["region"].replace("|", ":"))
+            self.geom = remove_complementary_groups(region, "~")
         elif self.FILL is not None:
             self.geom = None
         else:

@@ -114,9 +114,12 @@ class CsgToCad:
 
             UnivCell.build_BoundBox(self.universe_box, enlarge=0.2)
             if UnivCell.boundBox.Orientation == "Forward" and UnivCell.boundBox.Box is None:
-                UnivCell.shape = None
-                print(f"Cell {UnivCell.name} BoundBox is null")
-                return
+                print(
+                    f"Cell {UnivCell.name} calculated BoundBox is null; "
+                    "using the universe bounding box"
+                )
+                UnivCell.boundBox = self.universe_box
+                UnivCell.externalBox = self.universe_box
             else:
                 if UnivCell.boundBox.Orientation == "Forward":
                     UnivCell.externalBox = UnivCell.boundBox

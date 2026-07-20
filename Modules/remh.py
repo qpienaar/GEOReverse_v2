@@ -220,6 +220,42 @@ def complementary(ccell, outter=True):
     return wrkcell.str
 
 
+def remove_complementary_groups(cell, marker):
+    """Expand parenthesized unary complements from the inside out.
+
+    The existing :func:`complementary` function performs the Boolean
+    complement.  This helper only locates each parenthesized operand, allowing
+    the same machinery to be used for MCNP ``#(...)`` and OpenMC ``~(...)``
+    expressions.
+
+    Args:
+        cell: Region expression as a :class:`Cline` or string.
+        marker: Single-character unary complement marker.
+    """
+
+    if not isinstance(marker, str) or len(marker) != 1:
+        raise ValueError("Complement marker must be a single character")
+
+    if not isinstance(cell, Cline):
+        cell = Cline(cell)
+    else:
+        cell = cell.copy()
+
+    complement_group = re.compile(rf"{re.escape(marker)}\s*\(")
+
+    while True:
+        groups = list(complement_group.finditer(cell.str))
+        if not groups:
+            return cell
+
+        # Later matches are either nested more deeply or occur later in the
+        # string.  Replacing them first keeps all earlier offsets valid.
+        for match in reversed(groups):
+            start = match.start()
+            operand, end = cell.get_hashcell(start)
+            cell = Cline(cell.str[:start] + complementary(operand) + cell.str[end:])
+
+
 ############################################################
 class Cline:
     def __init__(self, line):
