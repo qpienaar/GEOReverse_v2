@@ -16,6 +16,7 @@ from .Objects import (
     EllipticCylinder,
     HyperbolicCylinder,
     Hyperboloid,
+    ParabolicCylinder,
     Paraboloid,
     Plane,
     Sphere,
@@ -710,6 +711,13 @@ def Get_primitive_surfaces(mcnp_surfaces, scale=10.0):
                     p = p.multiply(scale)
                 params = (p, v, radii, raxes)
 
+            elif Stype == "cylinder_parabolic":
+                vertex, free_axis, opening_axis, curvature_axis, focal = quadric
+                if scale != 1.0:
+                    vertex = vertex.multiply(scale)
+                    focal *= scale
+                params = (vertex, free_axis, opening_axis, curvature_axis, focal)
+
             elif Stype == "cone":
                 # p = FreeCAD.Vector(quadric[0:3])
                 # v = FreeCAD.Vector(quadric[3:6])
@@ -945,6 +953,8 @@ def Get_primitive_surfaces(mcnp_surfaces, scale=10.0):
             surfaces[Sid] = EllipticCylinder(Sid, number, params, trsf, Stype == "ecan")
         elif Stype == "cylinder_hyperbolic":
             surfaces[Sid] = HyperbolicCylinder(Sid, number, params, trsf)
+        elif Stype == "cylinder_parabolic":
+            surfaces[Sid] = ParabolicCylinder(Sid, number, params, trsf)
         elif Stype == "cone" or Stype == "tcone":
             surfaces[Sid] = Cone(Sid, number, params, trsf, Stype == "tcone")
         elif Stype == "cone_elliptic":
@@ -1004,6 +1014,41 @@ def get_parabola_parameters(eVal, eVect, T, U):
         focal = -focal
         axis = -axis
     return (center, axis, focal)
+
+
+def get_parabolic_cylinder_parameters(eVal, eVect, XD, T, k, zero, nonzero):
+    """Return canonical parameters for a rank-one parabolic cylinder."""
+    curvature_index = nonzero[0]
+    curvature_axis = FreeCAD.Vector(eVect.T[curvature_index])
+
+    # The linear term in the two-dimensional null space selects the parabola's
+    # opening direction.  The remaining perpendicular null direction is the
+    # free cylinder axis.
+    b = np.linalg.norm(XD[zero])
+    if b <= 1.0e-6:
+        raise ValueError("rank-one quadric has no parabolic linear term")
+
+    opening_axis = FreeCAD.Vector(0.0, 0.0, 0.0)
+    for index in zero:
+        opening_axis += FreeCAD.Vector(eVect.T[index]) * (XD[index] / b)
+    opening_axis.normalize()
+
+    free_axis = curvature_axis.cross(opening_axis)
+    free_axis.normalize()
+
+    vertex = FreeCAD.Vector(T) - opening_axis * (k / (2.0 * b))
+    focal = -b / (2.0 * eVal[curvature_index])
+    if focal < 0:
+        focal = -focal
+        opening_axis = -opening_axis
+
+    return "cylinder_parabolic", (
+        vertex,
+        free_axis,
+        opening_axis,
+        curvature_axis,
+        float(focal),
+    )
 
 
 def get_cylinder_parameters(eVal, eVect, T, k, iaxis):
@@ -1275,8 +1320,10 @@ def gq2params(x):
     eVal, vect = LA.eigh(mat3)
     XD = X @ vect  # X in diagonalised base
 
-    # Treat eigenvalues small relative to the largest eigenvalue as zero.
-    relative_tolerance = 1e-15
+    # Treat eigenvalues small relative to the quadratic form's dominant scale
+    # as zero.  This is intentionally scale-relative: multiplying every
+    # quadric coefficient by a common factor does not change its class.
+    relative_tolerance = 1e-10
     cutoff = relative_tolerance * np.max(np.abs(eVal))
     nonzero = np.abs(eVal) > cutoff
 
@@ -1288,9 +1335,18 @@ def gq2params(x):
     np.divide(1.0, eVal, out=Dinv, where=nonzero)
 
     zero = np.flatnonzero(~nonzero)
+    rank = np.count_nonzero(nonzero)
     TD = -XD * Dinv  # Translation vector in diagonalized base
 
     k = np.matmul(TD, XD) + x[9]
+
+    if rank == 0:
+        raise ValueError("quadric has no significant quadratic coefficients")
+
+    T = np.matmul(TD, vect.T)
+
+    if rank == 1:
+        return get_parabolic_cylinder_parameters(eVal, vect, XD, T, k, zero, np.flatnonzero(nonzero))
 
     if len(zero) != 0:
         iz = zero[0]
@@ -1304,8 +1360,6 @@ def gq2params(x):
             U = (k, None)
     else:
         U = (k, None)
-
-    T = np.matmul(TD, vect.T)
 
     return conicSurface(eVal, vect, T, U)
 

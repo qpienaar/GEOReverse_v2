@@ -17,6 +17,7 @@ from .Objects import (
     EllipticCylinder,
     HyperbolicCylinder,
     Hyperboloid,
+    ParabolicCylinder,
     Paraboloid,
     Plane,
     Sphere,
@@ -451,6 +452,13 @@ def Get_primitive_surfaces(mcnp_surfaces, scale=10.0):
                     p = p.multiply(scale)
                 params = (p, v, radii, raxes)
 
+            elif Stype == "cylinder_parabolic":
+                vertex, free_axis, opening_axis, curvature_axis, focal = quadric
+                if scale != 1.0:
+                    vertex = vertex.multiply(scale)
+                    focal *= scale
+                params = (vertex, free_axis, opening_axis, curvature_axis, focal)
+
             elif Stype == "cone":
                 p, v, t, dblsht = quadric
                 if scale != 1.0:
@@ -509,6 +517,8 @@ def Get_primitive_surfaces(mcnp_surfaces, scale=10.0):
             surfaces[Sid] = EllipticCylinder(Sid, number, params)
         elif Stype == "cylinder_hyperbolic":
             surfaces[Sid] = HyperbolicCylinder(Sid, number, params)
+        elif Stype == "cylinder_parabolic":
+            surfaces[Sid] = ParabolicCylinder(Sid, number, params)
         elif Stype == "cone":
             surfaces[Sid] = Cone(Sid, number, params)
         elif Stype == "cone_elliptic":
