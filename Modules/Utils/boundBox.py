@@ -28,7 +28,7 @@ class BoxSettings:
 
     def __init__(
         self,
-        universe_radius: float = 3500,  # units mm
+        universe_radius: float = 35000,  # units mm
         insolid_tolerance: float = 1,  # units mm
         box_dimensions: typing.Union[None, list, tuple] = None,
     ):
