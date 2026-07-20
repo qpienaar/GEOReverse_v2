@@ -229,10 +229,22 @@ def makeMaterialTree(CADdoc, CADCells):
             materialShapes[cell.MAT] = []
         materialShapes[cell.MAT].append(cell.shape)
 
-    for mat, shapes in sorted(materialShapes.items()):
+    sorted_materials = sorted(materialShapes.items())
+    material_count = len(sorted_materials)
+    for index, (mat, shapes) in enumerate(sorted_materials, start=1):
+        print(
+            f"CAD export: fusing material {mat} "
+            f"({index}/{material_count}) from {len(shapes)} shapes",
+            flush=True,
+        )
         featObj = CADdoc.addObject("Part::FeaturePython", f"material_{mat}")
         featObj.Label = f"Material_{mat}"
         featObj.Shape = FuseSolid(shapes)
         groupObj.addObject(featObj)
+        print(
+            f"CAD export: finished material {mat} "
+            f"({index}/{material_count})",
+            flush=True,
+        )
 
     return groupObj

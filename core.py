@@ -243,7 +243,11 @@ class CsgToCad:
         CADobj.Label = barename
 
         for CAD in self.buildCAD_list:
+            print("CAD export: building material tree", flush=True)
             CADobj.addObject(makeMaterialTree(CADdoc, CAD))
 
+        print(f"CAD export: writing STEP file {output_filename + suffix}", flush=True)
         Import.export(CADdoc.Objects[0:1], output_filename + suffix)
+        print(f"CAD export: writing FreeCAD file {output_filename}.FCStd", flush=True)
         CADdoc.saveAs(f"{output_filename}.FCStd")
+        print("CAD export: complete", flush=True)
