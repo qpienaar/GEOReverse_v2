@@ -2,6 +2,8 @@
 
 import Part
 
+from .diagnostics import report
+
 
 def _result_solids(result):
     """Return valid solids from a valid Boolean result, or None."""
@@ -75,12 +77,30 @@ def _adaptive_union(solids):
                     break
 
                 if relationship == "overlap":
+                    report(
+                        "unresolved_volumetric_overlap",
+                        [left, right],
+                        result=result,
+                        details=[
+                            f"left_index={left_index}",
+                            f"right_index={right_index}",
+                        ],
+                    )
                     raise RuntimeError(
                         "OCCT could not resolve a volumetric overlap between solids"
                     )
 
                 # A shared-face merge is optional. If OCCT cannot create one
                 # valid manifold solid, retain both valid solids separately.
+                report(
+                    "nonmanifold_shared_face_union_retained_separately",
+                    [left, right],
+                    result=result,
+                    details=[
+                        f"left_index={left_index}",
+                        f"right_index={right_index}",
+                    ],
+                )
                 nonmergeable.add(pair)
 
             if merged:
@@ -104,10 +124,24 @@ def FuseSolid(parts):
 
         part_solids = [part] if part.ShapeType == "Solid" else list(part.Solids)
         if not part_solids:
+            report(
+                "input_shape_contains_no_solids",
+                [part],
+                details=[f"part_index={len(solids)}"],
+            )
             raise TypeError(
                 f"Cannot fuse {part.ShapeType}: shape contains no solids"
             )
-        if any(not solid.isValid() for solid in part_solids):
+        invalid_solids = [solid for solid in part_solids if not solid.isValid()]
+        if invalid_solids:
+            report(
+                "invalid_input_solid",
+                list(parts),
+                details=[
+                    f"part_shape_type={part.ShapeType}",
+                    f"invalid_solid_count={len(invalid_solids)}",
+                ],
+            )
             raise RuntimeError("Cannot fuse an invalid input solid")
         solids.extend(part_solids)
 
@@ -117,6 +151,12 @@ def FuseSolid(parts):
     result = _boolean_union(solids)
     result_solids = _result_solids(result)
     if result_solids is None:
+        report(
+            "full_union_invalid_using_adaptive_fallback",
+            solids,
+            result=result,
+            details=[f"input_solid_count={len(solids)}"],
+        )
         result_solids = _adaptive_union(solids)
 
     if len(result_solids) == 1:
@@ -124,5 +164,10 @@ def FuseSolid(parts):
 
     compound = Part.makeCompound(result_solids)
     if not compound.isValid():
+        report(
+            "invalid_result_compound",
+            result_solids,
+            result=compound,
+        )
         raise RuntimeError("OCCT produced an invalid compound of result solids")
     return compound

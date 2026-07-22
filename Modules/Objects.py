@@ -6,6 +6,7 @@ import Part
 
 from .buildSolidCell import BuildSolid
 from .fuseSolid import FuseSolid
+from .diagnostics import cell_context
 from .remh import Cline
 from .Utils.booleanFunction import BoolSequence, outer_terms
 from .Utils.boundBox import solid_plane_box, myBox, BoxSettings
@@ -163,8 +164,9 @@ class CadCell:
         if surfTR:
             self.transformSurfaces(surfTR)
 
-        cutShape = BuildSolid(self)
-        self.shape = FuseSolid(cutShape)
+        with cell_context(self):
+            cutShape = BuildSolid(self)
+            self.shape = FuseSolid(cutShape)
 
     def buildSurfaceShape(self, boundBox):
         for s in self.surfaces.values():

@@ -5,6 +5,7 @@ import FreeCAD
 import Part
 
 from .fuseSolid import FuseSolid
+from .diagnostics import enabled as diagnostics_enabled, report
 
 
 class SplitBase:
@@ -133,9 +134,19 @@ def space_decomposition(solids, surfaces):
             else:
                 c.reverse()
                 print("Negative solid Volume", c.Volume)
+                if diagnostics_enabled():
+                    report(
+                        "negative_volume_solid_reversed",
+                        [c],
+                        details=["shape was reversed before this report"],
+                    )
+        if diagnostics_enabled() and not c.isValid():
+            report("space_decomposition_invalid_solid", [c])
         Svalues = {}
         point = point_inside(c)
         if point == None:
+            if diagnostics_enabled():
+                report("space_decomposition_no_interior_point", [c])
             continue  # point not found in solid (solid is surface or very thin can be source of lost particules in MCNP)
         for surf in surfaces:
             Svalues[surf.id] = surface_side(point, surf)
@@ -424,4 +435,3 @@ def btwPPlanes(p, p0, v):
         return -1
     else:
         return 1
-
