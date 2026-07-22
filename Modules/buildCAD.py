@@ -7,7 +7,7 @@ from .Utils.booleanFunction import BoolSequence
 from .Utils.boundBox import myBox
 
 
-def interferencia(container, cell, mode="common"):
+def interferencia(container, cell, mode="slice"):
 
     if mode == "common":
         return cell.shape.common(container.shape)
