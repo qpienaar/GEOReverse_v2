@@ -5,6 +5,7 @@ import numpy as np
 import Part
 
 from .buildSolidCell import BuildSolid
+from .fuseSolid import FuseSolid
 from .remh import Cline
 from .Utils.booleanFunction import BoolSequence, outer_terms
 from .Utils.boundBox import solid_plane_box, myBox, BoxSettings
@@ -800,39 +801,6 @@ class Undefined:
 
     def transform(self, matrix):
         return
-
-
-def FuseSolid(parts):
-    if (len(parts)) <= 1:
-        if parts:
-            solid = parts[0]
-        else:
-            return None
-    else:
-        try:
-            fused = parts[0].fuse(parts[1:])
-        except:
-            fused = None
-
-        if fused is not None:
-            try:
-                refinedfused = fused.removeSplitter()
-            except:
-                refinedfused = fused
-
-            if refinedfused.isValid():
-                solid = refinedfused
-            else:
-                if fused.isValid():
-                    solid = fused
-                else:
-                    solid = Part.makeCompound(parts)
-        else:
-            solid = Part.makeCompound(parts)
-
-    if solid.Volume < 0:
-        solid.reverse()
-    return solid
 
 
 def makeHyperboloid(center, radii, rAxes, axis, onesht, length):

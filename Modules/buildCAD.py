@@ -2,7 +2,7 @@ import BOPTools.SplitAPI
 from tqdm import tqdm
 import FreeCAD
 
-from .buildSolidCell import FuseSolid
+from .fuseSolid import FuseSolid
 from .Utils.booleanFunction import BoolSequence
 from .Utils.boundBox import myBox
 

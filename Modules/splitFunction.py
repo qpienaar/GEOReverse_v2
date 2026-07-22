@@ -4,6 +4,8 @@ import BOPTools.SplitAPI
 import FreeCAD
 import Part
 
+from .fuseSolid import FuseSolid
+
 
 class SplitBase:
     def __init__(self, base, knownSurf={}, orientation="Forward"):
@@ -423,38 +425,3 @@ def btwPPlanes(p, p0, v):
     else:
         return 1
 
-
-# ************************************************
-
-
-def FuseSolid(parts):
-    if (len(parts)) <= 1:
-        if parts:
-            solid = parts[0]
-        else:
-            return None
-    else:
-        try:
-            fused = parts[0].fuse(parts[1:])
-        except:
-            fused = None
-
-        if fused is not None:
-            try:
-                refinedfused = fused.removeSplitter()
-            except:
-                refinedfused = fused
-
-            if refinedfused.isValid():
-                solid = refinedfused
-            else:
-                if fused.isValid():
-                    solid = fused
-                else:
-                    solid = Part.makeCompound(parts)
-        else:
-            solid = Part.makeCompound(parts)
-
-    if solid.Volume < 0:
-        solid.reverse()
-    return solid
