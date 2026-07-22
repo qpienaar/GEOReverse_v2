@@ -31,15 +31,6 @@ class CellCard:
         else:
             self.FILL = None
 
-        if "rotation" in data or "translation" in data:
-            if self.FILL is None:
-                raise ValueError(
-                    f"Cell {self.name} has a rotation or translation "
-                    "but does not fill a universe"
-                )
-
-            self.TR = _cell_transform_matrix(data)
-
         if "region" in data.keys():
             region = Cline(data["region"].replace("|", ":"))
             self.geom = remove_complementary_groups(region, "~")
@@ -209,52 +200,8 @@ def _get_int_values(card, name):
     return [int(value) for value in _get_values(card, name)]
 
 
-def _cell_transform_matrix(data, scale=10.0):
-    """Return the FreeCAD placement for an OpenMC filled-universe cell.
-
-    OpenMC maps parent coordinates into filled-universe coordinates using
-    ``x_fill = R * (x_parent - translation)``. GEOUNED needs the inverse
-    mapping to place filled-universe CAD in parent coordinates. OpenMC lengths
-    are in centimetres, whereas FreeCAD lengths are in millimetres.
-    """
-    translation = [
-        float(value) for value in data.get("translation", "0 0 0").split()
-    ]
-    if len(translation) != 3:
-        raise ValueError(
-            "Cell translation must contain exactly 3 values; "
-            f"got {len(translation)}"
-        )
-
-    rotation_values = [
-        float(value)
-        for value in data.get("rotation", "1 0 0 0 1 0 0 0 1").split()
-    ]
-    if len(rotation_values) != 9:
-        raise ValueError(
-            "Cell rotation must contain exactly 9 values; "
-            f"got {len(rotation_values)}"
-        )
-
-    # OpenMC's XML matrix maps parent coordinates into fill coordinates.
-    parent_to_fill = FreeCAD.Matrix(
-        rotation_values[0], rotation_values[1], rotation_values[2], 0,
-        rotation_values[3], rotation_values[4], rotation_values[5], 0,
-        rotation_values[6], rotation_values[7], rotation_values[8], 0,
-        0,                  0,                  0,                  1,
-    )
-
-    # FreeCAD needs the inverse placement from fill coordinates to parent
-    # coordinates. Rotation coefficients are dimensionless and are not scaled.
-    fill_to_parent = parent_to_fill.inverse()
-    fill_to_parent.A14 = translation[0] * scale
-    fill_to_parent.A24 = translation[1] * scale
-    fill_to_parent.A34 = translation[2] * scale
-    return fill_to_parent
-
-
-def _translation_matrix(translation, scale=10.0):
-    # Convert OpenMC centimetres to FreeCAD millimetres.
+def _translation_matrix(translation, scale=10.0): 
+    # scale is for unit conversion from mm to cm
     return FreeCAD.Matrix(
         1,
         0,
