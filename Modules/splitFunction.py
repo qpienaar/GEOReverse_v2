@@ -127,41 +127,7 @@ def space_decomposition(solids, surfaces):
 
     component = []
     good_solids = []
-    surface_ids = [surface.id for surface in surfaces]
-    for component_index, c in enumerate(solids):
-        if not c.isValid():
-            try:
-                c.check(True)
-            except Exception as error:
-                occt_check = f"{type(error).__name__}: {error}"
-            else:
-                occt_check = "completed without additional details"
-
-            details = [
-                f"component_index={component_index}",
-                f"surface_ids={surface_ids}",
-                f"shape_type={c.ShapeType}",
-                f"solid_count={len(c.Solids)}",
-                f"shell_count={len(c.Shells)}",
-                f"face_count={len(c.Faces)}",
-                f"edge_count={len(c.Edges)}",
-                f"vertex_count={len(c.Vertexes)}",
-                f"occt_check={occt_check}",
-            ]
-            if diagnostics_enabled():
-                report(
-                    "space_decomposition_invalid_solid",
-                    [c],
-                    details=details,
-                )
-            raise RuntimeError(
-                "Invalid solid detected during space decomposition: "
-                f"component {component_index}, surfaces {surface_ids}, "
-                f"type {c.ShapeType}, faces {len(c.Faces)}, "
-                f"edges {len(c.Edges)}, vertices {len(c.Vertexes)}; "
-                f"OCCT check: {occt_check}"
-            )
-
+    for c in solids:
         if c.Volume < 1e-3:
             if abs(c.Volume) < 1e-3:
                 continue
@@ -175,6 +141,8 @@ def space_decomposition(solids, surfaces):
                         details=["shape was reversed before this report"],
                         severity="WARNING",
                     )
+        if diagnostics_enabled() and not c.isValid():
+            report("space_decomposition_invalid_solid", [c])
         Svalues = {}
         point = point_inside(c)
         if point == None:
