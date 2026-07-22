@@ -108,7 +108,7 @@ def _shape_lines(label, shape):
     return lines
 
 
-def report(event, shapes=(), result=None, details=()):
+def report(event, shapes=(), result=None, details=(), severity="ERROR"):
     """Print and persist a diagnostic event and its associated shapes."""
     if not enabled():
         return None
@@ -121,7 +121,12 @@ def report(event, shapes=(), result=None, details=()):
     event_dir = output_directory() / event_name
     event_dir.mkdir(parents=True, exist_ok=True)
 
-    lines = [f"event={event}", f"artifact_directory={event_dir}"]
+    severity = severity.upper()
+    lines = [
+        f"severity={severity}",
+        f"event={event}",
+        f"artifact_directory={event_dir}",
+    ]
     lines.extend(_cell_lines())
     lines.extend(str(detail) for detail in details)
 
@@ -144,5 +149,5 @@ def report(event, shapes=(), result=None, details=()):
     manifest = "\n".join(lines) + "\n"
     (event_dir / "diagnostic.txt").write_text(manifest, encoding="utf-8")
     for line in lines:
-        print(f"[GEOUNED DIAGNOSTIC] {line}", flush=True)
+        print(f"[GEOUNED DIAGNOSTIC {severity}] {line}", flush=True)
     return event_dir

@@ -100,6 +100,7 @@ def _adaptive_union(solids):
                         f"left_index={left_index}",
                         f"right_index={right_index}",
                     ],
+                    severity="WARNING",
                 )
                 nonmergeable.add(pair)
 
@@ -150,24 +151,34 @@ def FuseSolid(parts):
 
     result = _boolean_union(solids)
     result_solids = _result_solids(result)
+    used_adaptive_fallback = result_solids is None
     if result_solids is None:
-        report(
-            "full_union_invalid_using_adaptive_fallback",
-            solids,
-            result=result,
-            details=[f"input_solid_count={len(solids)}"],
-        )
         result_solids = _adaptive_union(solids)
 
     if len(result_solids) == 1:
-        return result_solids[0]
+        final_result = result_solids[0]
+    else:
+        final_result = Part.makeCompound(result_solids)
+        if not final_result.isValid():
+            report(
+                "invalid_result_compound",
+                result_solids,
+                result=final_result,
+            )
+            raise RuntimeError("OCCT produced an invalid compound of result solids")
 
-    compound = Part.makeCompound(result_solids)
-    if not compound.isValid():
+    if used_adaptive_fallback:
         report(
-            "invalid_result_compound",
-            result_solids,
-            result=compound,
+            "full_union_recovered_by_adaptive_fallback",
+            solids,
+            result=result,
+            details=[
+                f"input_solid_count={len(solids)}",
+                f"recovered_shape_type={final_result.ShapeType}",
+                f"recovered_solid_count={len(final_result.Solids)}",
+                f"recovered_result_valid={final_result.isValid()}",
+            ],
+            severity="WARNING",
         )
-        raise RuntimeError("OCCT produced an invalid compound of result solids")
-    return compound
+
+    return final_result

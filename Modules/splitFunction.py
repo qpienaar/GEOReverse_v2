@@ -139,6 +139,7 @@ def space_decomposition(solids, surfaces):
                         "negative_volume_solid_reversed",
                         [c],
                         details=["shape was reversed before this report"],
+                        severity="WARNING",
                     )
         if diagnostics_enabled() and not c.isValid():
             report("space_decomposition_invalid_solid", [c])
@@ -146,7 +147,11 @@ def space_decomposition(solids, surfaces):
         point = point_inside(c)
         if point == None:
             if diagnostics_enabled():
-                report("space_decomposition_no_interior_point", [c])
+                report(
+                    "space_decomposition_no_interior_point",
+                    [c],
+                    severity="WARNING",
+                )
             continue  # point not found in solid (solid is surface or very thin can be source of lost particules in MCNP)
         for surf in surfaces:
             Svalues[surf.id] = surface_side(point, surf)
