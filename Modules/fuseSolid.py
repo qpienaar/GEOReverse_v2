@@ -15,8 +15,17 @@ def _result_solids(result):
 
 
 def _boolean_union(solids):
-    """Attempt one OCCT Boolean union without normalizing its shape type."""
+    """Attempt one OCCT Boolean union and remove redundant split boundaries."""
     result = solids[0] if len(solids) == 1 else solids[0].fuse(solids[1:])
+
+    if len(solids) > 1:
+        try:
+            refined = result.removeSplitter()
+        except Exception:
+            refined = None
+        if refined is not None and not refined.isNull() and refined.isValid():
+            result = refined
+
     if result.Volume < 0:
         result.reverse()
     return result
@@ -96,33 +105,34 @@ def FuseSolid(parts):
     A connected result is returned as a Solid. A disconnected result is
     returned as a Compound whose children are the separate Solid entities.
     """
-    solids = []
+    parts = [part for part in parts if part is not None and not part.isNull()]
 
-    for part in parts:
-        if part is None or part.isNull():
-            continue
+    if len(parts) <= 1:
+        if parts:
+            solid = parts[0]
+        else:
+            return None
+    else:
+        try:
+            fused = parts[0].fuse(parts[1:])
+        except Exception:
+            fused = None
 
-        part_solids = [part] if part.ShapeType == "Solid" else list(part.Solids)
-        if not part_solids:
-            raise TypeError(
-                f"Cannot fuse {part.ShapeType}: shape contains no solids"
-            )
-        if any(not solid.isValid() for solid in part_solids):
-            raise RuntimeError("Cannot fuse an invalid input solid")
-        solids.extend(part_solids)
+        if fused is not None:
+            try:
+                refined_fused = fused.removeSplitter()
+            except Exception:
+                refined_fused = fused
 
-    if not solids:
-        return None
+            if refined_fused.isValid():
+                solid = refined_fused
+            elif fused.isValid():
+                solid = fused
+            else:
+                solid = Part.makeCompound(parts)
+        else:
+            solid = Part.makeCompound(parts)
 
-    result = _boolean_union(solids)
-    result_solids = _result_solids(result)
-    if result_solids is None:
-        result_solids = _adaptive_union(solids)
-
-    if len(result_solids) == 1:
-        return result_solids[0]
-
-    compound = Part.makeCompound(result_solids)
-    if not compound.isValid():
-        raise RuntimeError("OCCT produced an invalid compound of result solids")
-    return compound
+    if solid.Volume < 0:
+        solid.reverse()
+    return solid
