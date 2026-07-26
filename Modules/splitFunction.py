@@ -4,7 +4,7 @@ import BOPTools.SplitAPI
 import FreeCAD
 import Part
 
-from .fuseSolid import FuseSolid
+from .fuseSolid import FuseSolid, checkSolid, repairSolid
 
 
 class SplitBase:
@@ -103,7 +103,15 @@ def SplitSolid(base, surfacesCut, cellObj, tolerance=0.01):  # 1e-2
         #  sol.exportStep('solid_{}{}.stp'.format(name,ii))
 
         if inSolid:
-            fullPart.append(SplitBase(sol, pos, orientation))
+            healthy, issues = checkSolid(sol)
+            if not healthy:
+                sol = repairSolid(sol, issues)
+
+            if sol is None:
+                continue
+
+            solids = sol.Solids if sol.ShapeType == "Compound" else (sol,)
+            fullPart.extend(SplitBase(part, pos, orientation) for part in solids)
         elif inSolid is None:
             cutPart.append(SplitBase(sol, pos, orientation))
     return fullPart, cutPart
@@ -424,4 +432,3 @@ def btwPPlanes(p, p0, v):
         return -1
     else:
         return 1
-

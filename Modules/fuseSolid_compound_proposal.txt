@@ -1,10 +1,37 @@
-"""Utilities for producing valid solid unions and repairing topology."""
+COMPOUND REPAIR PROPOSAL
+========================
 
-import Part
+This proposes replacing FuseSolid() and adding repairCompound() below.  The
+existing checkSolid(), repairSolid(), and checkRepair() functions remain as-is.
 
+Decisions incorporated
+----------------------
+
+repairCompound() receives raw Part shapes, not the parametric surfaces that
+created them.  The tangency workaround therefore applies a small inward offset
+to the smaller troublesome solid.  This changes every outside face of that
+solid, but that behavior has been accepted because the solid would otherwise
+be discarded.
+
+The proposal uses 1.0e-4 as the gap/fuzzy tolerance and 1.0e-7 as both the
+contact and inward-offset construction tolerance.  These are intentionally
+smaller than the 1.0e-2 ShapeFix precision.
+
+When a repair cannot resolve every bad interface, the proposal discards the
+part involved in the most failures and uses smaller volume as the tie-breaker.
+Discarded parts and their diagnostics are printed for now.
+
+Compound inputs must be supported.  FuseSolid() is called with previously
+built cell and material shapes, and those shapes can already be compounds when
+they contain disconnected regions.  Null-part cleanup and compound expansion
+are kept as two separate one-line operations.
+
+
+PROPOSED CODE
+-------------
 
 def FuseSolid(parts):
-    """Fuse healthy parts, repairing or discarding bad parts."""
+    """Fuse healthy parts, repairing or discarding bad parts first."""
     parts = [part for part in parts if part is not None and not part.isNull()]
     parts = [solid for part in parts for solid in (part.Solids if part.ShapeType == "Compound" else (part,))]
 
@@ -45,7 +72,7 @@ def FuseSolid(parts):
         return repairCompound(healthy_parts, ["Null fuse result"])
 
     # A compound can be the correct result of a successful fuse when the input
-    # contains physically disconnected regions. Check each child rather than
+    # contains physically disconnected regions.  Check each child rather than
     # the whole compound, because compound-level BOP checking can complain about
     # relationships between otherwise healthy child solids.
     if fused.ShapeType == "Compound":
@@ -61,8 +88,8 @@ def FuseSolid(parts):
             else:
                 disconnected_parts.append(part)
 
-        # An empty compound is a failed fuse. A nonempty compound is accepted
-        # only when every child is healthy and every pair is separated. If two
+        # An empty compound is a failed fuse.  A nonempty compound is accepted
+        # only when every child is healthy and every pair is separated.  If two
         # children still touch, the compound may merely contain the unfused
         # inputs, so send the original parts through compound repair.
         if not disconnected_parts:
@@ -84,95 +111,6 @@ def FuseSolid(parts):
 
     return repairCompound(healthy_parts, issues)
 
-
-def checkSolid(solid):
-    """Return whether a shape is healthy and its reported issues."""
-    issues = []
-
-    if not solid.isValid():
-        issues.append("solid.isValid() error")
-
-    if solid.Volume < 0:
-        issues.append("Negative volume")
-
-    try:
-        solid.check(True)
-    except Exception as error:
-        issues.extend(line.strip() for line in str(error).splitlines() if line.strip() and line.strip() not in ("No error", "BOP check found the following errors:"))
-
-    issues = list(dict.fromkeys(issues))
-    return not issues, issues
-
-
-def repairSolid(solid, issues):
-    """Return an accepted repaired shape, or None."""
-    issue_text = "\n".join(issues).lower()
-
-    if solid.Volume < 0:
-        candidate = solid.copy()
-        candidate.reverse()
-        if checkRepair(solid, candidate):
-            return candidate
-
-    if "redundant" in issue_text:
-        try:
-            candidate = solid.removeSplitter()
-            if checkRepair(solid, candidate):
-                return candidate
-        except Exception:
-            pass
-
-    orientation_errors = ("unorientable shape", "bad orientation", "bad orientation of sub-shape")
-    if any(issue in issue_text for issue in orientation_errors):
-        try:
-            fixer = Part.ShapeFix.Solid()
-            fixer.init(solid)
-            fixer.Precision = 1.0e-2
-            fixer.MinTolerance = 1.0e-7
-            fixer.MaxTolerance = 5.0e-2
-            fixer.FixShellMode = True
-            fixer.FixShellOrientationMode = True
-            fixer.CreateOpenSolidMode = False
-            fixer.perform()
-            candidate = fixer.shape()
-            if checkRepair(solid, candidate):
-                return candidate
-        except Exception:
-            pass
-
-    brep_issues = [issue for issue in issues if "bopalgo" not in issue.lower()]
-    if brep_issues:
-        try:
-            fixer = Part.ShapeFix.Shape(solid)
-            fixer.Precision = 1.0e-2
-            fixer.MinTolerance = 1.0e-7
-            fixer.MaxTolerance = 5.0e-2
-            fixer.FixSameParameterMode = True
-            fixer.FixVertexPositionMode = False
-            fixer.FixVertexTolMode = True
-            fixer.perform()
-            candidate = fixer.shape()
-            if checkRepair(solid, candidate):
-                return candidate
-        except Exception:
-            pass
-
-    return None
-
-
-def checkRepair(solid, candidate):
-    """Return whether candidate is an acceptable repair of solid."""
-    if candidate is None or candidate.isNull():
-        return False
-
-    volume_limit = max(1.0e-6, abs(solid.Volume) * 1.0e-9)
-    if abs(abs(candidate.Volume) - abs(solid.Volume)) > volume_limit:
-        return False
-
-    if candidate.ShapeType == "Compound":
-        return bool(candidate.Solids) and all(checkSolid(part)[0] for part in candidate.Solids)
-
-    return checkSolid(candidate)[0]
 
 def repairCompound(parts, issues=None, tolerance=1.0e-4):
     """Repair failed unions and return a healthy solid or compound."""
@@ -212,7 +150,7 @@ def repairCompound(parts, issues=None, tolerance=1.0e-4):
             continue
 
         # A touching pair with no common volume is the practical signature
-        # available here for a tangent/C0 contact. Shrink the smaller part
+        # available here for a tangent/C0 contact.  Shrink the smaller part
         # slightly to replace that contact with a deliberate gap.
         try:
             common = left.common(right)
@@ -232,7 +170,7 @@ def repairCompound(parts, issues=None, tolerance=1.0e-4):
             except Exception:
                 pass
 
-        # Refragment only the bad pair. For a union every volumetric fragment
+        # Refragment only the bad pair.  For a union every volumetric fragment
         # belongs in the result; faces, edges, and vertices are discarded.
         try:
             fragments, fragment_map = left.generalFuse([right], tolerance)
@@ -273,7 +211,7 @@ def repairCompound(parts, issues=None, tolerance=1.0e-4):
 
         unresolved_pairs.append((left_index, right_index, pair_issues))
 
-    # Remove as few unresolved parts as practical. Repeatedly discard the part
+    # Remove as few unresolved parts as practical.  Repeatedly discard the part
     # involved in the most failed interfaces; for a tie, discard the smaller
     # part to minimize lost volume.
     while unresolved_pairs:
@@ -298,8 +236,8 @@ def repairCompound(parts, issues=None, tolerance=1.0e-4):
     if len(parts) == 1:
         return parts[0]
 
-    # Fuse the remaining connected groups. Disconnected groups are retained
-    # separately and returned as a healthy compound. A part which still
+    # Fuse the remaining connected groups.  Disconnected groups are retained
+    # separately and returned as a healthy compound.  A part which still
     # touches a group but cannot join it is the failed part and is discarded.
     groups = []
     for part in parts:
