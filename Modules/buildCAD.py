@@ -15,7 +15,8 @@ def interferencia(container, cell, mode="common"):
         cell_parts = cell.shape.parts if cell.shape.shape.ShapeType == "Compound" and cell.shape.bop_safe is False else [cell.shape]
         container_parts = container.shape.parts if container.shape.shape.ShapeType == "Compound" and container.shape.bop_safe is False else [container.shape]
         common_parts = [left.shape.common(right.shape) for left in cell_parts for right in container_parts]
-        return FuseSolid(common_parts)
+        common_parts = [part for part in common_parts if part.Solids]
+        return FuseSolid(common_parts) if common_parts else None
 
     Base = cell.shape.shape
     Tool = (container.shape.shape,)

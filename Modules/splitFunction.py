@@ -14,6 +14,103 @@ class SplitBase:
         self.orientation = orientation
 
 
+def _perturbSurface(surface, delta, boundBox):
+    """Rebuild a supported analytic splitting surface with a small displacement."""
+    perturbed = surface.copy()
+
+    if surface.type == "plane":
+        normal, distance = surface.params
+        perturbed.params = (normal, distance + delta)
+    elif surface.type == "sphere":
+        center, radius = surface.params
+        if radius + delta <= 0:
+            return None
+        perturbed.params = (center, radius + delta)
+    elif surface.type == "cylinder":
+        point, axis, radius = surface.params
+        if radius + delta <= 0:
+            return None
+        perturbed.params = (point, axis, radius + delta)
+    elif surface.type == "torus":
+        center, axis, major, minor_a, minor_b = surface.params
+        if minor_a + delta <= 0 or minor_b + delta <= 0:
+            return None
+        perturbed.params = (center, axis, major, minor_a + delta, minor_b + delta)
+    else:
+        return None
+
+    perturbed.buildShape(boundBox)
+    if perturbed.shape is None or perturbed.shape.isNull():
+        return None
+    return perturbed.shape
+
+
+def _splitWithRetry(base, surfaces, tolerance):
+    """Split a healthy base and retry unhealthy results with bounded perturbations."""
+    tools = tuple(surface.shape for surface in surfaces)
+    try:
+        result = BOPTools.SplitAPI.slice(base.shape, tools, "Split", tolerance=tolerance)
+        originalParts = [TopoWrapper(solid) for solid in result.Solids]
+    except Exception:
+        originalParts = []
+
+    for part in originalParts:
+        part.check()
+    if not originalParts:
+        return originalParts
+    if all(part.status == "healthy" for part in originalParts):
+        return originalParts
+
+    if base.status == "unchecked":
+        base.check()
+    if base.status != "healthy":
+        return originalParts
+
+    surfaceIds = ", ".join(f"{surface.id} ({surface.type})" for surface in surfaces)
+    issues = list(dict.fromkeys(issue for part in originalParts for issue in part.issues))
+    issueText = "; ".join(issues[:3]) if issues else "no usable fragments"
+    print(f"Retrying unhealthy split on surface(s) {surfaceIds}: {issueText}")
+
+    maxPerturbation = min(abs(tolerance), 1.0e-4)
+    perturbations = tuple(value for value in (1.0e-6, 1.0e-5, 1.0e-4) if value <= maxPerturbation)
+    if maxPerturbation > 0 and not perturbations:
+        perturbations = (maxPerturbation,)
+
+    volumeLimit = max(1.0e-6, abs(base.shape.Volume) * 5.0e-5)
+    for magnitude in perturbations:
+        candidates = []
+        for toolIndex, surface in enumerate(surfaces):
+            for delta in (magnitude, -magnitude):
+                tool = _perturbSurface(surface, delta, base.shape.BoundBox)
+                if tool is None:
+                    continue
+
+                perturbedTools = list(tools)
+                perturbedTools[toolIndex] = tool
+                try:
+                    result = BOPTools.SplitAPI.slice(base.shape, tuple(perturbedTools), "Split", tolerance=0)
+                    parts = [TopoWrapper(solid) for solid in result.Solids]
+                    for part in parts:
+                        part.check()
+                except Exception:
+                    continue
+
+                if len(parts) < 2 or any(part.status != "healthy" for part in parts):
+                    continue
+
+                volumeError = abs(sum(abs(part.shape.Volume) for part in parts) - abs(base.shape.Volume))
+                if volumeError <= volumeLimit:
+                    candidates.append((volumeError, toolIndex, delta, parts))
+
+        if candidates:
+            volumeError, toolIndex, delta, parts = min(candidates, key=lambda candidate: candidate[0])
+            print(f"Split retry succeeded on surface {surfaces[toolIndex].id} with perturbation {delta:g}; volume error {volumeError:g}")
+            return parts
+
+    print("Split retry failed; keeping the original fragments for repair or discard")
+    return originalParts
+
+
 def joinBase(baseList):
     shape = []
     surf = {}
@@ -80,18 +177,16 @@ def SplitSolid(base, surfacesCut, cellObj, tolerance=0.01):  # 1e-2
 
     Tools = tuple(s.shape for s in surfacesCut)
     if Tools[0] is not None:
-        try:
-            Solids = BOPTools.SplitAPI.slice(base.base.shape, Tools, "Split", tolerance=tolerance).Solids
-        except Exception:
-            Solids = []
-        if not Solids:
-            Solids = [base.base.shape]
+        splitParts = _splitWithRetry(base.base, surfacesCut, tolerance)
+        if not splitParts:
+            splitParts = [base.base]
     else:
-        Solids = [base.base.shape]
+        splitParts = [base.base]
 
-    partPositions, partSolids = space_decomposition(Solids, surfacesCut)
+    partPositions, partSolids = space_decomposition(splitParts, surfacesCut)
 
-    for pos, sol in zip(partPositions, partSolids):
+    for pos, wrapped in zip(partPositions, partSolids):
+        sol = wrapped.shape
         # fullPos = updateSurfacesValues(pos,cellObj.surfaces,base.knownSurf)
         # inSolid = cellObj.definition.evaluate(fullPos)
 
@@ -108,9 +203,6 @@ def SplitSolid(base, surfacesCut, cellObj, tolerance=0.01):  # 1e-2
         #  sol.exportStep('solid_{}{}.stp'.format(name,ii))
 
         if inSolid:
-            wrapped = TopoWrapper(sol)
-            if wrapped.status == "unchecked":
-                wrapped.check()
             if wrapped.status != "healthy" and wrapped.repair() is None:
                 continue
 
@@ -119,7 +211,7 @@ def SplitSolid(base, surfacesCut, cellObj, tolerance=0.01):  # 1e-2
             else:
                 fullPart.append(SplitBase(wrapped, pos, orientation))
         elif inSolid is None:
-            cutPart.append(SplitBase(sol, pos, orientation))
+            cutPart.append(SplitBase(wrapped, pos, orientation))
     return fullPart, cutPart
 
 
@@ -136,11 +228,18 @@ def updateSurfacesValues(position, surfaces, knownSurf):
 
 # Get the position of subregion with respect
 # all cutting surfaces
-def space_decomposition(solids, surfaces):
+def space_decomposition(parts, surfaces):
+    """Classify checked wrappers relative to the original splitting surfaces."""
 
     component = []
     good_solids = []
-    for c in solids:
+    for part in parts:
+        if part.status == "unchecked":
+            part.check()
+        if part.status != "healthy" and part.repair() is None:
+            continue
+
+        c = part.shape
         if c.Volume < 1e-3:
             if abs(c.Volume) < 1e-3:
                 continue
@@ -155,7 +254,7 @@ def space_decomposition(solids, surfaces):
             Svalues[surf.id] = surface_side(point, surf)
 
         component.append(Svalues)
-        good_solids.append(c)
+        good_solids.append(part)
     return component, good_solids
 
 
