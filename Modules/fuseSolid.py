@@ -3,333 +3,503 @@
 import Part
 
 
-def FuseSolid(parts):
-    """Fuse healthy parts, repairing or discarding bad parts."""
-    parts = [part for part in parts if part is not None and not part.isNull()]
-    parts = [solid for part in parts for solid in (part.Solids if part.ShapeType == "Compound" else (part,))]
+class TopoWrapper:
+    """Keep a TopoShape together with its cached topology-health result."""
 
+    def __init__(self, shape, parts=None, status="unchecked", issues=None, bop_safe=None, contacts=None):
+        """Store a shape together with its cached health and BOP-safety state."""
+        self.shape = shape
+        self.status = status
+        self.issues = [] if issues is None else issues
+        self.parts = parts
+        self.bop_safe = bop_safe
+        self.contacts = [] if contacts is None else contacts
+
+    def replaceShape(self, shape, parts=None):
+        """Replace the shape and invalidate all cached topology information."""
+        self.shape = shape
+        self.status = "unchecked"
+        self.issues = []
+        self.parts = parts
+        self.bop_safe = None
+        self.contacts = []
+
+    def check(self, tolerance=1.0e-7):
+        """Check an unchecked Solid or Compound and update its status."""
+        if self.status != "unchecked":
+            return
+
+        if self.shape.ShapeType == "Compound":
+            self._checkCompound(tolerance)
+        else:
+            self._checkSolid()
+
+    def repair(self, tolerance=1.0e-4, require_bop_safe=False):
+        """Repair topology and optionally force a compound to become BOP-safe."""
+        if self.status == "unchecked":
+            self.check()
+
+        if self.shape.ShapeType != "Compound":
+            if self.status == "healthy":
+                return self.shape
+            return self._repairSolid()
+
+        repairable_contacts = ("overlap", "face", "near", "unknown")
+        needs_contact_repair = any(contact[2] in repairable_contacts for contact in self.contacts)
+        if self.status == "healthy" and require_bop_safe and self.bop_safe:
+            return self.shape
+        if self.status == "healthy" and not needs_contact_repair and not require_bop_safe:
+            return self.shape
+
+        return self._repairCompound(tolerance, require_bop_safe)
+
+    def _checkSolid(self):
+        """Check the intrinsic topology health of a non-compound shape."""
+        if not self.shape.isValid():
+            self.issues.append("solid.isValid() error")
+
+        if self.shape.Volume < 0:
+            self.issues.append("Negative volume")
+
+        try:
+            self.shape.check(True)
+        except Exception as error:
+            ignored = ("No error", "BOP check found the following errors:")
+            self.issues.extend(line.strip() for line in str(error).splitlines() if line.strip() and line.strip() not in ignored)
+
+        self.issues = list(dict.fromkeys(self.issues))
+        self.status = "healthy" if not self.issues else "unhealthy"
+        self.bop_safe = self.status == "healthy"
+
+    def _checkCompound(self, tolerance):
+        """Check child health and classify the contacts within a compound."""
+        if self.parts is None:
+            self.parts = [TopoWrapper(solid) for solid in self.shape.Solids]
+
+        if not self.parts:
+            self.issues.append("Empty compound")
+        else:
+            for part in self.parts:
+                if part.status == "unchecked":
+                    part.check(tolerance)
+                if part.status == "unhealthy":
+                    self.issues.extend(part.issues)
+
+        solid_face_count = sum(len(part.shape.Faces) for part in self.parts or [])
+        if len(self.shape.Faces) != solid_face_count:
+            self.issues.append("Compound contains non-solid topology")
+
+        self.contacts = []
+        for left_index, left in enumerate(self.parts or []):
+            for right_index in range(left_index + 1, len(self.parts)):
+                contact = self._classifyContact(left, self.parts[right_index], tolerance)
+                if contact is not None:
+                    self.contacts.append((left_index, right_index, contact[0], contact[1]))
+
+        self.issues = list(dict.fromkeys(self.issues))
+        self.status = "healthy" if not self.issues else "unhealthy"
+        unsafe_contacts = ("overlap", "face", "edge", "vertex", "unknown")
+        self.bop_safe = self.status == "healthy" and not any(contact[2] in unsafe_contacts for contact in self.contacts)
+
+    def _classifyContact(self, left, right, contact_tolerance=1.0e-7, near_tolerance=1.0e-4):
+        """Classify the geometric relationship between two healthy solids."""
+        try:
+            distance = left.shape.distToShape(right.shape)[0]
+        except Exception:
+            return "unknown", 0.0
+
+        if distance > near_tolerance:
+            return None
+
+        try:
+            common = left.shape.common(right.shape)
+            volume_limit = max(1.0e-9, min(abs(left.shape.Volume), abs(right.shape.Volume)) * 1.0e-12)
+            if abs(common.Volume) > volume_limit:
+                return "overlap", distance
+        except Exception:
+            return "unknown", distance
+
+        if distance > contact_tolerance:
+            return "near", distance
+
+        try:
+            face_area = max((left_face.common(right_face).Area for left_face in left.shape.Faces for right_face in right.shape.Faces), default=0.0)
+            if face_area > max(1.0e-10, contact_tolerance * contact_tolerance):
+                return "face", distance
+        except Exception:
+            return "unknown", distance
+
+        try:
+            section = left.shape.section(right.shape)
+            if section.Length > contact_tolerance:
+                return "edge", distance
+            if section.Vertexes:
+                return "vertex", distance
+        except Exception:
+            return "unknown", distance
+
+        return "unknown", distance
+
+    def _repairSolid(self):
+        """Try solid repairs in increasing order of intervention."""
+        if self.shape.Volume < 0:
+            candidate = self.shape.copy()
+            candidate.reverse()
+            if self._acceptRepair(candidate):
+                return self.shape
+
+        issue_text = "\n".join(self.issues).lower()
+
+        if "redundant" in issue_text:
+            try:
+                if self._acceptRepair(self.shape.removeSplitter()):
+                    return self.shape
+            except Exception:
+                pass
+
+        orientation_errors = ("unorientable shape", "bad orientation", "bad orientation of sub-shape")
+        if any(issue in issue_text for issue in orientation_errors):
+            try:
+                fixer = Part.ShapeFix.Solid()
+                fixer.init(self.shape)
+                fixer.Precision = 1.0e-2
+                fixer.MinTolerance = 1.0e-7
+                fixer.MaxTolerance = 5.0e-2
+                fixer.FixShellMode = True
+                fixer.FixShellOrientationMode = True
+                fixer.CreateOpenSolidMode = False
+                fixer.perform()
+                if self._acceptRepair(fixer.shape()):
+                    return self.shape
+            except Exception:
+                pass
+
+        if any("bopalgo" not in issue.lower() for issue in self.issues):
+            try:
+                fixer = Part.ShapeFix.Shape(self.shape)
+                fixer.Precision = 1.0e-2
+                fixer.MinTolerance = 1.0e-7
+                fixer.MaxTolerance = 5.0e-2
+                fixer.FixSameParameterMode = True
+                fixer.FixVertexPositionMode = False
+                fixer.FixVertexTolMode = True
+                fixer.perform()
+                if self._acceptRepair(fixer.shape()):
+                    return self.shape
+            except Exception:
+                pass
+
+        return None
+
+    def _repairCompound(self, tolerance, require_bop_safe=False):
+        """Run contact-aware repair on the cached child wrappers."""
+        if self.parts is None:
+            self.parts = [TopoWrapper(solid) for solid in self.shape.Solids]
+
+        healthy_parts = []
+        for part in self.parts:
+            if part.status == "unchecked":
+                part.check()
+            if part.status != "healthy" and part.repair() is None:
+                print("Discarding unhealthy compound part:", "; ".join(part.issues))
+                continue
+
+            if part.shape.ShapeType == "Compound":
+                healthy_parts.extend(part.parts)
+            else:
+                healthy_parts.append(part)
+
+        if not healthy_parts:
+            return None
+
+        repaired_parts = self._repairCompoundParts(healthy_parts, tolerance, require_bop_safe)
+        if not repaired_parts:
+            return None
+
+        if len(repaired_parts) == 1:
+            result = repaired_parts[0]
+        else:
+            result = TopoWrapper(Part.makeCompound([part.shape for part in repaired_parts]), repaired_parts)
+
+        if result.status == "unchecked":
+            result.check()
+        if result.status == "unhealthy":
+            self.issues.extend(result.issues)
+            return None
+        if require_bop_safe and not result.bop_safe:
+            return None
+
+        self.shape = result.shape
+        self.status = result.status
+        self.issues = result.issues
+        self.parts = result.parts
+        self.bop_safe = result.bop_safe
+        self.contacts = result.contacts
+        return self.shape
+
+    def _fuzzyFusePair(self, left, right, maximum_tolerance):
+        """Try bounded fuzzy generalFuse tolerances on one failed pair."""
+        common_volume = 0.0
+        try:
+            common_volume = abs(left.shape.common(right.shape).Volume)
+        except Exception:
+            pass
+
+        expected_volume = abs(left.shape.Volume) + abs(right.shape.Volume) - common_volume
+        for fuzzy in (1.0e-7, 1.0e-6, 1.0e-5, 1.0e-4):
+            if fuzzy > maximum_tolerance:
+                continue
+
+            try:
+                fragments, _fragment_map = left.shape.generalFuse([right.shape], fuzzy)
+                candidate = Part.makeCompound(fragments.Solids).removeSplitter()
+                if candidate.ShapeType == "Compound" and len(candidate.Solids) == 1:
+                    candidate = candidate.Solids[0]
+                wrapped = TopoWrapper(candidate)
+                wrapped.check()
+            except Exception:
+                continue
+
+            volume_limit = max(1.0e-6, expected_volume * 1.0e-9)
+            volume_preserved = abs(abs(wrapped.shape.Volume) - expected_volume) <= volume_limit
+            if wrapped.status == "healthy" and wrapped.shape.ShapeType == "Solid" and volume_preserved:
+                return wrapped
+
+        return None
+
+    def _trimContact(self, left, right, contact_type, gap):
+        """Create a local gap by trimming the smaller member of a tangent pair."""
+        target = left if abs(left.shape.Volume) <= abs(right.shape.Volume) else right
+        other = right if target is left else left
+
+        scales = (1.0, 10.0, 100.0) if contact_type == "edge" else (1.0,)
+        for scale in scales:
+            try:
+                section = target.shape.section(other.shape)
+                if contact_type == "vertex":
+                    tools = [Part.makeSphere(gap, vertex.Point) for vertex in section.Vertexes]
+                elif contact_type == "edge":
+                    tools = []
+                    for edge in section.Edges:
+                        radius = gap * scale
+                        curve = edge.Curve
+                        if edge.isClosed() and hasattr(curve, "Radius"):
+                            tools.append(Part.makeTorus(curve.Radius, radius, curve.Center, curve.Axis))
+                        else:
+                            point = edge.valueAt(edge.FirstParameter)
+                            tangent = edge.tangentAt(edge.FirstParameter)
+                            profile = Part.Wire([Part.makeCircle(radius, point, tangent)])
+                            tools.append(Part.Wire([edge]).makePipeShell([profile], True, False))
+                elif contact_type == "face":
+                    face_common = max((target_face.common(other_face) for target_face in target.shape.Faces for other_face in other.shape.Faces), key=lambda shape: shape.Area)
+                    face = face_common.Faces[0]
+                    u0, u1, v0, v1 = face.ParameterRange
+                    normal = face.normalAt(0.5 * (u0 + u1), 0.5 * (v0 + v1))
+                    tools = [face.extrude(normal * gap), face.extrude(normal * -gap)]
+                else:
+                    return None
+
+                if not tools:
+                    return None
+
+                tool = tools[0] if len(tools) == 1 else tools[0].fuse(tools[1:])
+                candidate = target.shape.cut(tool)
+                if candidate.ShapeType == "Compound" and len(candidate.Solids) == 1:
+                    candidate = candidate.Solids[0]
+                wrapped = TopoWrapper(candidate)
+                wrapped.check()
+                distance = wrapped.shape.distToShape(other.shape)[0]
+            except Exception:
+                continue
+
+            volume_loss = abs(target.shape.Volume) - abs(wrapped.shape.Volume)
+            volume_limit = max(1.0e-6, abs(target.shape.Volume) * 1.0e-3)
+            if wrapped.status == "healthy" and volume_loss <= volume_limit and distance > 1.0e-7:
+                return (wrapped, right) if target is left else (left, wrapped)
+
+        return None
+
+    def _repairCompoundParts(self, parts, tolerance, require_bop_safe=False):
+        """Repair failed pair interfaces without discarding healthy tangencies."""
+        parts = list(parts)
+        contact_tolerance = 1.0e-7
+
+        while len(parts) > 1:
+            changed = False
+            unresolved_pairs = []
+            for left_index, left in enumerate(parts):
+                for right_index in range(left_index + 1, len(parts)):
+                    right = parts[right_index]
+                    contact = self._classifyContact(left, right, contact_tolerance, tolerance)
+                    if contact is None:
+                        continue
+                    contact_type = contact[0]
+
+                    candidate = None
+                    try:
+                        fused = left.shape.fuse(right.shape)
+                        if fused is not None and not fused.isNull():
+                            if fused.ShapeType == "Compound" and len(fused.Solids) == 1:
+                                fused = fused.Solids[0]
+                            checked = TopoWrapper(fused)
+                            checked.check()
+                            if checked.status == "healthy" and checked.shape.ShapeType == "Solid":
+                                candidate = checked
+                    except Exception as error:
+                        pair_issues = [str(error)]
+                    else:
+                        pair_issues = [] if candidate is not None else ["Pair fuse did not produce a healthy solid"]
+
+                    if candidate is None and contact_type in ("face", "near"):
+                        candidate = self._fuzzyFusePair(left, right, tolerance)
+
+                    if candidate is not None:
+                        parts[left_index] = candidate
+                        del parts[right_index]
+                        changed = True
+                        break
+
+                    if contact_type in ("edge", "vertex", "face"):
+                        if require_bop_safe:
+                            trimmed = self._trimContact(left, right, contact_type, tolerance)
+                            if trimmed is not None:
+                                parts[left_index], parts[right_index] = trimmed
+                                changed = True
+                                break
+                        continue
+
+                    if contact_type == "near":
+                        continue
+
+                    candidate = self._fuzzyFusePair(left, right, tolerance)
+                    if candidate is not None:
+                        parts[left_index] = candidate
+                        del parts[right_index]
+                        changed = True
+                        break
+
+                    unresolved_pairs.append((left_index, right_index, pair_issues or [f"Unresolved {contact_type} contact"]))
+                if changed:
+                    break
+
+            if changed:
+                continue
+            if not unresolved_pairs:
+                break
+
+            failure_count = {}
+            for left_index, right_index, pair_issues in unresolved_pairs:
+                failure_count[left_index] = failure_count.get(left_index, 0) + 1
+                failure_count[right_index] = failure_count.get(right_index, 0) + 1
+            discard_index = max(failure_count, key=lambda index: (failure_count[index], -abs(parts[index].shape.Volume)))
+            discard_issues = [issue for left_index, right_index, pair_issues in unresolved_pairs if discard_index in (left_index, right_index) for issue in pair_issues]
+            print("Discarding part after failed compound repair:", "; ".join(dict.fromkeys(discard_issues)))
+            del parts[discard_index]
+
+        return parts
+
+    def _acceptRepair(self, candidate):
+        """Accept a volume-preserving candidate after type-aware validation."""
+        if candidate is None or candidate.isNull():
+            return False
+
+        volume_limit = max(1.0e-6, abs(self.shape.Volume) * 1.0e-9)
+        if abs(abs(candidate.Volume) - abs(self.shape.Volume)) > volume_limit:
+            return False
+
+        result = TopoWrapper(candidate)
+        if result.status == "unchecked":
+            result.check()
+        if result.status == "unhealthy":
+            return False
+
+        self.shape = result.shape
+        self.status = result.status
+        self.issues = result.issues
+        self.parts = result.parts
+        self.bop_safe = result.bop_safe
+        self.contacts = result.contacts
+        return True
+
+
+def FuseSolid(parts):
+    """Fuse shapes or wrappers and return a checked TopoWrapper, or None."""
+    parts = [part for part in parts if part is not None]
+    parts = [part if isinstance(part, TopoWrapper) else TopoWrapper(part) for part in parts]
+    parts = [part for part in parts if part.shape is not None and not part.shape.isNull()]
+
+    if len(parts) == 1:
+        part = parts[0]
+        if part.status == "unchecked":
+            part.check()
+        if part.status != "healthy" and part.repair() is None:
+            print("Discarding unhealthy part:", "; ".join(part.issues))
+            return None
+        if part.shape.ShapeType == "Compound" and len(part.parts) == 1:
+            return part.parts[0]
+        return part
+
+    expanded = []
+    for part in parts:
+        if part.shape.ShapeType != "Compound":
+            expanded.append(part)
+            continue
+
+        if part.status == "unchecked":
+            part.check()
+        if part.status == "healthy":
+            expanded.extend(part.parts)
+        elif part.repair() is not None:
+            expanded.extend(part.parts or [part])
+
+    parts = expanded
     if not parts:
         print("No valid parts")
         return None
 
     healthy_parts = []
     for part in parts:
-        healthy, issues = checkSolid(part)
-        if healthy:
-            healthy_parts.append(part)
+        if part.status == "unchecked":
+            part.check()
+        if part.status != "healthy" and part.repair() is None:
+            print("Discarding unhealthy part:", "; ".join(part.issues))
             continue
-
-        repaired = repairSolid(part, issues)
-        if repaired is None:
-            print("Discarding unhealthy part:", "; ".join(issues))
-            continue
-
-        if repaired.ShapeType == "Compound":
-            healthy_parts.extend(repaired.Solids)
-        else:
-            healthy_parts.append(repaired)
+        healthy_parts.append(part)
 
     if not healthy_parts:
         print("No healthy parts")
         return None
-
     if len(healthy_parts) == 1:
         return healthy_parts[0]
 
     try:
-        fused = healthy_parts[0].fuse(healthy_parts[1:])
+        result = TopoWrapper(healthy_parts[0].shape.fuse([part.shape for part in healthy_parts[1:]]))
     except Exception as error:
-        return repairCompound(healthy_parts, [str(error)])
+        result = TopoWrapper(Part.makeCompound([part.shape for part in healthy_parts]), healthy_parts, "unhealthy", [str(error)])
+        result.repair()
+        return result if result.status == "healthy" else None
 
-    if fused is None or fused.isNull():
-        return repairCompound(healthy_parts, ["Null fuse result"])
+    if result.shape is None or result.shape.isNull():
+        result = TopoWrapper(Part.makeCompound([part.shape for part in healthy_parts]), healthy_parts, "unhealthy", ["Null fuse result"])
+        result.repair()
+        return result if result.status == "healthy" else None
 
-    # A compound can be the correct result of a successful fuse when the input
-    # contains physically disconnected regions. Check each child rather than
-    # the whole compound, because compound-level BOP checking can complain about
-    # relationships between otherwise healthy child solids.
-    if fused.ShapeType == "Compound":
-        disconnected_parts = []
-        for part in fused.Solids:
-            healthy, issues = checkSolid(part)
-            if not healthy:
-                part = repairSolid(part, issues)
-            if part is None:
-                return repairCompound(healthy_parts, issues)
-            if part.ShapeType == "Compound":
-                disconnected_parts.extend(part.Solids)
-            else:
-                disconnected_parts.append(part)
+    if result.shape.ShapeType == "Compound" and len(result.shape.Solids) == 1:
+        result = TopoWrapper(result.shape.Solids[0])
 
-        # An empty compound is a failed fuse. A nonempty compound is accepted
-        # only when every child is healthy and every pair is separated. If two
-        # children still touch, the compound may merely contain the unfused
-        # inputs, so send the original parts through compound repair.
-        if not disconnected_parts:
-            return repairCompound(healthy_parts, ["Fuse produced an empty compound"])
-        if len(disconnected_parts) == 1:
-            return disconnected_parts[0]
-        physically_disconnected = all(left.distToShape(right)[0] > 1.0e-7 for left_index, left in enumerate(disconnected_parts) for right in disconnected_parts[left_index + 1:])
-        if physically_disconnected:
-            return Part.makeCompound(disconnected_parts)
-        return repairCompound(healthy_parts, ["Fuse compound still contains touching solids"])
+    if result.status == "unchecked":
+        result.check()
+    repairable_contacts = ("overlap", "face", "near", "unknown")
+    if result.status == "healthy" and any(contact[2] in repairable_contacts for contact in result.contacts):
+        if result.repair() is not None:
+            return result
 
-    healthy, issues = checkSolid(fused)
-    if healthy:
-        return fused
+    if result.status == "healthy":
+        return result
 
-    repaired = repairSolid(fused, issues)
-    if repaired is not None:
-        return repaired
+    if result.repair() is not None:
+        return result
 
-    return repairCompound(healthy_parts, issues)
-
-
-def checkSolid(solid):
-    """Return whether a shape is healthy and its reported issues."""
-    issues = []
-
-    if not solid.isValid():
-        issues.append("solid.isValid() error")
-
-    if solid.Volume < 0:
-        issues.append("Negative volume")
-
-    try:
-        solid.check(True)
-    except Exception as error:
-        issues.extend(line.strip() for line in str(error).splitlines() if line.strip() and line.strip() not in ("No error", "BOP check found the following errors:"))
-
-    issues = list(dict.fromkeys(issues))
-    return not issues, issues
-
-
-def repairSolid(solid, issues):
-    """Return an accepted repaired shape, or None."""
-    issue_text = "\n".join(issues).lower()
-
-    if solid.Volume < 0:
-        candidate = solid.copy()
-        candidate.reverse()
-        if checkRepair(solid, candidate):
-            return candidate
-
-    if "redundant" in issue_text:
-        try:
-            candidate = solid.removeSplitter()
-            if checkRepair(solid, candidate):
-                return candidate
-        except Exception:
-            pass
-
-    orientation_errors = ("unorientable shape", "bad orientation", "bad orientation of sub-shape")
-    if any(issue in issue_text for issue in orientation_errors):
-        try:
-            fixer = Part.ShapeFix.Solid()
-            fixer.init(solid)
-            fixer.Precision = 1.0e-2
-            fixer.MinTolerance = 1.0e-7
-            fixer.MaxTolerance = 5.0e-2
-            fixer.FixShellMode = True
-            fixer.FixShellOrientationMode = True
-            fixer.CreateOpenSolidMode = False
-            fixer.perform()
-            candidate = fixer.shape()
-            if checkRepair(solid, candidate):
-                return candidate
-        except Exception:
-            pass
-
-    brep_issues = [issue for issue in issues if "bopalgo" not in issue.lower()]
-    if brep_issues:
-        try:
-            fixer = Part.ShapeFix.Shape(solid)
-            fixer.Precision = 1.0e-2
-            fixer.MinTolerance = 1.0e-7
-            fixer.MaxTolerance = 5.0e-2
-            fixer.FixSameParameterMode = True
-            fixer.FixVertexPositionMode = False
-            fixer.FixVertexTolMode = True
-            fixer.perform()
-            candidate = fixer.shape()
-            if checkRepair(solid, candidate):
-                return candidate
-        except Exception:
-            pass
-
-    return None
-
-
-def checkRepair(solid, candidate):
-    """Return whether candidate is an acceptable repair of solid."""
-    if candidate is None or candidate.isNull():
-        return False
-
-    volume_limit = max(1.0e-6, abs(solid.Volume) * 1.0e-9)
-    if abs(abs(candidate.Volume) - abs(solid.Volume)) > volume_limit:
-        return False
-
-    if candidate.ShapeType == "Compound":
-        return bool(candidate.Solids) and all(checkSolid(part)[0] for part in candidate.Solids)
-
-    return checkSolid(candidate)[0]
-
-def repairCompound(parts, issues=None, tolerance=1.0e-4):
-    """Repair failed unions and return a healthy solid or compound."""
-    if issues:
-        print("Repairing failed fusion:", "; ".join(issues))
-
-    parts = list(parts)
-    failed_pairs = []
-    contact_tolerance = 1.0e-7
-
-    # Pairwise fusion identifies the exact interfaces that cause trouble.
-    # Pairs farther apart than contact_tolerance are intentionally disconnected and
-    # should remain separate members of the final compound.
-    for left_index, left in enumerate(parts):
-        for right_index in range(left_index + 1, len(parts)):
-            right = parts[right_index]
-            try:
-                if left.distToShape(right)[0] > contact_tolerance:
-                    continue
-                candidate = left.fuse(right)
-                if candidate is None or candidate.isNull():
-                    failed_pairs.append((left_index, right_index, ["Null pair-fuse result"]))
-                    continue
-                if candidate.ShapeType == "Compound" and len(candidate.Solids) == 1:
-                    candidate = candidate.Solids[0]
-                healthy, pair_issues = checkSolid(candidate)
-                if candidate.ShapeType == "Compound" or not healthy:
-                    failed_pairs.append((left_index, right_index, pair_issues or ["Pair fuse returned a compound"]))
-            except Exception as error:
-                failed_pairs.append((left_index, right_index, [str(error)]))
-
-    unresolved_pairs = []
-    for left_index, right_index, pair_issues in failed_pairs:
-        left = parts[left_index]
-        right = parts[right_index]
-        if left is None or right is None:
-            continue
-
-        # A touching pair with no common volume is the practical signature
-        # available here for a tangent/C0 contact. Shrink the smaller part
-        # slightly to replace that contact with a deliberate gap.
-        try:
-            common = left.common(right)
-            tangent_contact = left.distToShape(right)[0] <= contact_tolerance and abs(common.Volume) <= 1.0e-9
-        except Exception:
-            tangent_contact = False
-
-        if tangent_contact:
-            shrink_index = left_index if abs(left.Volume) <= abs(right.Volume) else right_index
-            try:
-                candidate = parts[shrink_index].makeOffsetShape(-tolerance, 1.0e-7)
-                healthy, candidate_issues = checkSolid(candidate)
-                other = parts[right_index if shrink_index == left_index else left_index]
-                if healthy and candidate.Volume > 0 and candidate.distToShape(other)[0] > 0:
-                    parts[shrink_index] = candidate
-                    continue
-            except Exception:
-                pass
-
-        # Refragment only the bad pair. For a union every volumetric fragment
-        # belongs in the result; faces, edges, and vertices are discarded.
-        try:
-            fragments, fragment_map = left.generalFuse([right], tolerance)
-        except Exception:
-            fragments = None
-
-        kept_fragments = []
-        if fragments is not None and not fragments.isNull():
-            for fragment in fragments.Solids:
-                healthy, fragment_issues = checkSolid(fragment)
-                if not healthy:
-                    fragment = repairSolid(fragment, fragment_issues)
-                if fragment is None:
-                    continue
-                if fragment.ShapeType == "Compound":
-                    kept_fragments.extend(fragment.Solids)
-                else:
-                    kept_fragments.append(fragment)
-
-        if kept_fragments:
-            try:
-                candidate = Part.makeCompound(kept_fragments).removeSplitter()
-                if candidate.ShapeType == "Compound" and len(candidate.Solids) == 1:
-                    candidate = candidate.Solids[0]
-                healthy, candidate_issues = checkSolid(candidate)
-                expected_volume = sum(abs(fragment.Volume) for fragment in kept_fragments)
-                volume_limit = max(1.0e-6, expected_volume * 1.0e-9)
-                volume_preserved = abs(abs(candidate.Volume) - expected_volume) <= volume_limit
-            except Exception:
-                candidate = None
-                healthy = False
-                volume_preserved = False
-
-            if healthy and volume_preserved and candidate.ShapeType == "Solid":
-                parts[left_index] = candidate
-                parts[right_index] = None
-                continue
-
-        unresolved_pairs.append((left_index, right_index, pair_issues))
-
-    # Remove as few unresolved parts as practical. Repeatedly discard the part
-    # involved in the most failed interfaces; for a tie, discard the smaller
-    # part to minimize lost volume.
-    while unresolved_pairs:
-        failure_count = {}
-        for left_index, right_index, pair_issues in unresolved_pairs:
-            if parts[left_index] is not None and parts[right_index] is not None:
-                failure_count[left_index] = failure_count.get(left_index, 0) + 1
-                failure_count[right_index] = failure_count.get(right_index, 0) + 1
-
-        if not failure_count:
-            break
-
-        discard_index = max(failure_count, key=lambda index: (failure_count[index], -abs(parts[index].Volume)))
-        discard_issues = [issue for left_index, right_index, pair_issues in unresolved_pairs if discard_index in (left_index, right_index) for issue in pair_issues]
-        print("Discarding part after failed compound repair:", "; ".join(dict.fromkeys(discard_issues)))
-        parts[discard_index] = None
-        unresolved_pairs = [pair for pair in unresolved_pairs if discard_index not in pair[:2]]
-
-    parts = [part for part in parts if part is not None]
-    if not parts:
-        return None
-    if len(parts) == 1:
-        return parts[0]
-
-    # Fuse the remaining connected groups. Disconnected groups are retained
-    # separately and returned as a healthy compound. A part which still
-    # touches a group but cannot join it is the failed part and is discarded.
-    groups = []
-    for part in parts:
-        touches_group = False
-        group_issues = []
-        for group_index, group in enumerate(groups):
-            try:
-                if group.distToShape(part)[0] > contact_tolerance:
-                    continue
-                touches_group = True
-                candidate = group.fuse(part)
-                if candidate is None or candidate.isNull():
-                    group_issues.append("Null group-fuse result")
-                    continue
-                if candidate.ShapeType == "Compound" and len(candidate.Solids) == 1:
-                    candidate = candidate.Solids[0]
-                healthy, candidate_issues = checkSolid(candidate)
-                if healthy and candidate.ShapeType == "Solid":
-                    groups[group_index] = candidate
-                    break
-                group_issues.extend(candidate_issues or ["Group fuse returned a compound"])
-            except Exception as error:
-                group_issues.append(str(error))
-                continue
-        else:
-            if not touches_group:
-                groups.append(part)
-            else:
-                print("Discarding part because it still cannot fuse with its connected group:", "; ".join(dict.fromkeys(group_issues)))
-
-    if len(groups) == 1:
-        return groups[0]
-    return Part.makeCompound(groups)
+    result = TopoWrapper(Part.makeCompound([part.shape for part in healthy_parts]), healthy_parts, "unhealthy", ["Fuse did not produce a healthy union"])
+    result.repair()
+    return result if result.status == "healthy" else None

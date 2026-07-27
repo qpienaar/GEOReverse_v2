@@ -4,13 +4,13 @@ import BOPTools.SplitAPI
 import FreeCAD
 import Part
 
-from .fuseSolid import FuseSolid, checkSolid, repairSolid
+from .fuseSolid import FuseSolid, TopoWrapper
 
 
 class SplitBase:
-    def __init__(self, base, knownSurf={}, orientation="Forward"):
-        self.base = base
-        self.knownSurf = knownSurf
+    def __init__(self, base, knownSurf=None, orientation="Forward"):
+        self.base = base if base is None or isinstance(base, TopoWrapper) else TopoWrapper(base)
+        self.knownSurf = {} if knownSurf is None else knownSurf
         self.orientation = orientation
 
 
@@ -43,6 +43,7 @@ def joinBase(baseList):
 
 # TODO rename this function as there are two with the name name
 def SplitSolid(base, surfacesCut, cellObj, tolerance=0.01):  # 1e-2
+    """Split wrapped geometry while keeping unsafe compound children separate."""
     # split Base (shape Object or list/tuple of shapes)
     # with selected surfaces (list of surfaces objects) cutting the base(s) (surfacesCut)
     # cellObj is the CAD object of the working cell to reconstruction.
@@ -62,6 +63,10 @@ def SplitSolid(base, surfacesCut, cellObj, tolerance=0.01):  # 1e-2
             cutPart.extend(cutList)
         return fullPart, cutPart
 
+    if base.base.shape.ShapeType == "Compound" and base.base.bop_safe is False:
+        children = [SplitBase(part, base.knownSurf, base.orientation) for part in base.base.parts]
+        return SplitSolid(children, surfacesCut, cellObj, tolerance)
+
     # part if base is shape object
     # resulting cell orientation is "Reversed" only if both
     # cells have reversed orientations
@@ -70,19 +75,19 @@ def SplitSolid(base, surfacesCut, cellObj, tolerance=0.01):  # 1e-2
     else:
         orientation = "Forward"
 
-    if abs(base.base.Volume / base.base.Area) < 1e-2:
+    if abs(base.base.shape.Volume / base.base.shape.Area) < 1e-2:
         return fullPart, cutPart
 
     Tools = tuple(s.shape for s in surfacesCut)
     if Tools[0] is not None:
         try:
-            Solids = BOPTools.SplitAPI.slice(base.base, Tools, "Split", tolerance=tolerance).Solids
-        except:
+            Solids = BOPTools.SplitAPI.slice(base.base.shape, Tools, "Split", tolerance=tolerance).Solids
+        except Exception:
             Solids = []
         if not Solids:
-            Solids = [base.base]
+            Solids = [base.base.shape]
     else:
-        Solids = [base.base]
+        Solids = [base.base.shape]
 
     partPositions, partSolids = space_decomposition(Solids, surfacesCut)
 
@@ -103,15 +108,16 @@ def SplitSolid(base, surfacesCut, cellObj, tolerance=0.01):  # 1e-2
         #  sol.exportStep('solid_{}{}.stp'.format(name,ii))
 
         if inSolid:
-            healthy, issues = checkSolid(sol)
-            if not healthy:
-                sol = repairSolid(sol, issues)
-
-            if sol is None:
+            wrapped = TopoWrapper(sol)
+            if wrapped.status == "unchecked":
+                wrapped.check()
+            if wrapped.status != "healthy" and wrapped.repair() is None:
                 continue
 
-            solids = sol.Solids if sol.ShapeType == "Compound" else (sol,)
-            fullPart.extend(SplitBase(part, pos, orientation) for part in solids)
+            if wrapped.shape.ShapeType == "Compound":
+                fullPart.extend(SplitBase(part, pos, orientation) for part in wrapped.parts)
+            else:
+                fullPart.append(SplitBase(wrapped, pos, orientation))
         elif inSolid is None:
             cutPart.append(SplitBase(sol, pos, orientation))
     return fullPart, cutPart

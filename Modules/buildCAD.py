@@ -1,6 +1,7 @@
 import BOPTools.SplitAPI
 from tqdm import tqdm
 import FreeCAD
+import Part
 
 from .fuseSolid import FuseSolid
 from .Utils.booleanFunction import BoolSequence
@@ -8,17 +9,21 @@ from .Utils.boundBox import myBox
 
 
 def interferencia(container, cell, mode="common"):
+    """Clip a cell without passing unsafe compounds directly into a BOP."""
 
     if mode == "common":
-        return cell.shape.common(container.shape)
+        cell_parts = cell.shape.parts if cell.shape.shape.ShapeType == "Compound" and cell.shape.bop_safe is False else [cell.shape]
+        container_parts = container.shape.parts if container.shape.shape.ShapeType == "Compound" and container.shape.bop_safe is False else [container.shape]
+        common_parts = [left.shape.common(right.shape) for left in cell_parts for right in container_parts]
+        return FuseSolid(common_parts)
 
-    Base = cell.shape
-    Tool = (container.shape,)
+    Base = cell.shape.shape
+    Tool = (container.shape.shape,)
 
     solids = BOPTools.SplitAPI.slice(Base, Tool, "Split", tolerance=0).Solids
     cellParts = []
     for s in solids:
-        if container.shape.isInside(s.CenterOfMass, 0.0, False):
+        if container.shape.shape.isInside(s.CenterOfMass, 0.0, False):
             cellParts.append(s)
 
     if not cellParts:
@@ -48,7 +53,7 @@ def get_universe_containers(levels, Universes):
 
 def get_container_box(ContainerCell):
     if ContainerCell.shape is not None:
-        external_box = myBox(ContainerCell.shape.BoundBox, "Forward")
+        external_box = myBox(ContainerCell.shape.shape.BoundBox, "Forward")
         if ContainerCell.CurrentTR:
             external_box.Box = external_box.Box.transformed(ContainerCell.CurrentTR.inverse())
     else:
@@ -190,7 +195,7 @@ def makeTree(CADdoc, CADCells):
         else:
             featObj = CADdoc.addObject("Part::FeaturePython", f"solid{i}")
             featObj.Label = f"Cell_{c.name}_{c.MAT}"
-            featObj.Shape = c.shape
+            featObj.Shape = c.shape.shape
             if c.MAT not in CADObj.keys():
                 CADObj[c.MAT] = [featObj]
             else:
@@ -239,7 +244,8 @@ def makeMaterialTree(CADdoc, CADCells):
         )
         featObj = CADdoc.addObject("Part::FeaturePython", f"material_{mat}")
         featObj.Label = f"Material_{mat}"
-        featObj.Shape = FuseSolid(shapes)
+        result = FuseSolid(shapes)
+        featObj.Shape = Part.Shape() if result is None else result.shape
         groupObj.addObject(featObj)
         print(
             f"CAD export: finished material {mat} "

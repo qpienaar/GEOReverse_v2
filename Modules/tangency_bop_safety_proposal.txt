@@ -1,0 +1,457 @@
+HEALTHY COMPOUNDS, BOP SAFETY, AND TANGENCY REPAIR PROPOSAL
+===========================================================
+
+This is a proposed patch only.  It does not modify the Python implementation.
+
+
+SEMANTICS
+---------
+
+``status`` continues to describe intrinsic topology health:
+
+    unchecked   The wrapper has not been checked.
+    healthy     The shape and every solid child are healthy.
+    unhealthy   The shape or at least one child has a topology problem.
+
+``bop_safe`` describes whether the whole wrapped shape can be passed to OCCT as
+one Boolean argument:
+
+    None        BOP safety has not been determined.
+    True        The shape can be used directly in a BOP.
+    False       Expand the compound into child wrappers before a BOP.
+
+``contacts`` records compound relationships as:
+
+    (left_index, right_index, contact_type, distance)
+
+where contact_type is ``overlap``, ``face``, ``edge``, ``vertex``, ``near``, or
+``unknown``.
+
+A compound containing healthy edge- or vertex-tangent solids is therefore:
+
+    status = "healthy"
+    bop_safe = False
+
+It can be retained and exported without changing either solid.  It must be
+expanded before another Boolean operation.
+
+A near pair has a real positive gap and remains BOP-safe.  It is recorded so a
+failed union can retry the pair with bounded fuzzy tolerances, but failure of
+that retry does not make the compound unsafe.
+
+
+CONTACT CLASSIFICATION OBSERVED WITH THE INSTALLED FREECAD BUILD
+---------------------------------------------------------------
+
+Regularized ``solid.common(solid)`` returns an empty compound for face, edge,
+and vertex tangency, so ``common.Faces`` and ``common.Edges`` cannot classify
+these contacts.
+
+The tested signatures are:
+
+    overlap   common.Volume > volume tolerance
+    face      maximum pairwise face-common Area > area tolerance
+    edge      section.Length > length tolerance
+    vertex    section has vertices but no measurable edges
+    near      0 < distToShape distance <= near tolerance
+
+
+PROPOSED TOPOWRAPPER STATE
+--------------------------
+
+Replace the constructor and replaceShape() with:
+
+    def __init__(self, shape, parts=None, status="unchecked", issues=None, bop_safe=None, contacts=None):
+        """Store a shape together with its cached health and BOP-safety state."""
+        self.shape = shape
+        self.status = status
+        self.issues = [] if issues is None else issues
+        self.parts = parts
+        self.bop_safe = bop_safe
+        self.contacts = [] if contacts is None else contacts
+
+    def replaceShape(self, shape, parts=None):
+        """Replace the shape and invalidate all cached topology information."""
+        self.shape = shape
+        self.status = "unchecked"
+        self.issues = []
+        self.parts = parts
+        self.bop_safe = None
+        self.contacts = []
+
+At the end of _checkSolid(), add:
+
+    self.bop_safe = self.status == "healthy"
+
+
+PROPOSED CONTACT CLASSIFIER
+---------------------------
+
+Add this method to TopoWrapper:
+
+    def _classifyContact(self, left, right, contact_tolerance=1.0e-7, near_tolerance=1.0e-4):
+        """Classify the geometric relationship between two healthy solids."""
+        try:
+            distance = left.shape.distToShape(right.shape)[0]
+        except Exception:
+            return "unknown", 0.0
+
+        if distance > near_tolerance:
+            return None
+
+        try:
+            common = left.shape.common(right.shape)
+            volume_limit = max(1.0e-9, min(abs(left.shape.Volume), abs(right.shape.Volume)) * 1.0e-12)
+            if abs(common.Volume) > volume_limit:
+                return "overlap", distance
+        except Exception:
+            return "unknown", distance
+
+        if distance > contact_tolerance:
+            return "near", distance
+
+        try:
+            face_area = max((left_face.common(right_face).Area for left_face in left.shape.Faces for right_face in right.shape.Faces), default=0.0)
+            if face_area > max(1.0e-10, contact_tolerance * contact_tolerance):
+                return "face", distance
+        except Exception:
+            return "unknown", distance
+
+        try:
+            section = left.shape.section(right.shape)
+            if section.Length > contact_tolerance:
+                return "edge", distance
+            if section.Vertexes:
+                return "vertex", distance
+        except Exception:
+            return "unknown", distance
+
+        return "unknown", distance
+
+
+PROPOSED COMPOUND CHECK
+-----------------------
+
+Replace _checkCompound() with:
+
+    def _checkCompound(self, tolerance):
+        """Check child health and classify the contacts within a compound."""
+        if self.parts is None:
+            self.parts = [TopoWrapper(solid) for solid in self.shape.Solids]
+
+        if not self.parts:
+            self.issues.append("Empty compound")
+        else:
+            for part in self.parts:
+                if part.status == "unchecked":
+                    part.check(tolerance)
+                if part.status == "unhealthy":
+                    self.issues.extend(part.issues)
+
+        solid_face_count = sum(len(part.shape.Faces) for part in self.parts or [])
+        if len(self.shape.Faces) != solid_face_count:
+            self.issues.append("Compound contains non-solid topology")
+
+        self.contacts = []
+        for left_index, left in enumerate(self.parts or []):
+            for right_index in range(left_index + 1, len(self.parts)):
+                contact = self._classifyContact(left, self.parts[right_index], tolerance)
+                if contact is not None:
+                    self.contacts.append((left_index, right_index, contact[0], contact[1]))
+
+        self.issues = list(dict.fromkeys(self.issues))
+        self.status = "healthy" if not self.issues else "unhealthy"
+        unsafe_contacts = ("overlap", "face", "edge", "vertex", "unknown")
+        self.bop_safe = self.status == "healthy" and not any(contact[2] in unsafe_contacts for contact in self.contacts)
+
+The important change is that contact is no longer placed in ``issues``.
+Topology health and BOP safety are independent results.
+
+
+PROPOSED REPAIR DISPATCH
+------------------------
+
+Change repair() to:
+
+    def repair(self, tolerance=1.0e-4, require_bop_safe=False):
+        """Repair topology and optionally force a compound to become BOP-safe."""
+        if self.status == "unchecked":
+            self.check()
+
+        if self.shape.ShapeType != "Compound":
+            if self.status == "healthy":
+                return self.shape
+            return self._repairSolid()
+
+        repairable_contacts = ("overlap", "face", "near", "unknown")
+        needs_contact_repair = any(contact[2] in repairable_contacts for contact in self.contacts)
+
+        if self.status == "healthy" and require_bop_safe and self.bop_safe:
+            return self.shape
+        if self.status == "healthy" and not needs_contact_repair and not require_bop_safe:
+            return self.shape
+
+        return self._repairCompound(tolerance, require_bop_safe)
+
+Edge and vertex contacts are retained by ordinary repair.  They are locally
+trimmed only when a caller explicitly requires one BOP-safe compound.
+
+
+BOUNDED FUZZY PAIR FUSION
+-------------------------
+
+Add this method to TopoWrapper:
+
+    def _fuzzyFusePair(self, left, right, maximum_tolerance):
+        """Try bounded fuzzy generalFuse tolerances on one failed pair."""
+        common_volume = 0.0
+        try:
+            common_volume = abs(left.shape.common(right.shape).Volume)
+        except Exception:
+            pass
+
+        expected_volume = abs(left.shape.Volume) + abs(right.shape.Volume) - common_volume
+        fuzzy_values = (1.0e-7, 1.0e-6, 1.0e-5, 1.0e-4)
+
+        for fuzzy in fuzzy_values:
+            if fuzzy > maximum_tolerance:
+                continue
+
+            try:
+                fragments, fragment_map = left.shape.generalFuse([right.shape], fuzzy)
+                candidate = Part.makeCompound(fragments.Solids).removeSplitter()
+                if candidate.ShapeType == "Compound" and len(candidate.Solids) == 1:
+                    candidate = candidate.Solids[0]
+                wrapped = TopoWrapper(candidate)
+                if wrapped.status == "unchecked":
+                    wrapped.check()
+            except Exception:
+                continue
+
+            volume_limit = max(1.0e-6, expected_volume * 1.0e-9)
+            volume_preserved = abs(abs(wrapped.shape.Volume) - expected_volume) <= volume_limit
+            if wrapped.status == "healthy" and wrapped.shape.ShapeType == "Solid" and volume_preserved:
+                return wrapped
+
+        return None
+
+This is attempted for failed face and near pairs before any geometry is
+modified.  The bounded sequence prevents a single large fuzzy tolerance from
+silently changing the model.
+
+
+LOCAL CONTACT TRIM
+------------------
+
+Add this method.  It locally removes material from the smaller solid and is
+called only when ``require_bop_safe`` is True.
+
+    def _trimContact(self, left, right, contact_type, gap):
+        """Create a local gap by trimming the smaller member of a tangent pair."""
+        target = left if abs(left.shape.Volume) <= abs(right.shape.Volume) else right
+        other = right if target is left else left
+
+        try:
+            if contact_type == "vertex":
+                section = target.shape.section(other.shape)
+                tools = [Part.makeSphere(gap, vertex.Point) for vertex in section.Vertexes]
+
+            elif contact_type == "edge":
+                section = target.shape.section(other.shape)
+                tools = []
+                for edge in section.Edges:
+                    point = edge.valueAt(edge.FirstParameter)
+                    tangent = edge.tangentAt(edge.FirstParameter)
+                    profile = Part.Wire([Part.makeCircle(gap, point, tangent)])
+                    tools.append(Part.Wire([edge]).makePipeShell([profile], True, False))
+
+            elif contact_type == "face":
+                face_common = max((target_face.common(other_face) for target_face in target.shape.Faces for other_face in other.shape.Faces), key=lambda shape: shape.Area)
+                face = face_common.Faces[0]
+                normal = face.normalAt(0, 0)
+                tools = [face.extrude(normal * gap), face.extrude(normal * -gap)]
+
+            else:
+                return None
+
+            if not tools:
+                return None
+
+            tool = tools[0] if len(tools) == 1 else tools[0].fuse(tools[1:])
+            candidate = target.shape.cut(tool)
+            if candidate.ShapeType == "Compound" and len(candidate.Solids) == 1:
+                candidate = candidate.Solids[0]
+            wrapped = TopoWrapper(candidate)
+            if wrapped.status == "unchecked":
+                wrapped.check()
+        except Exception:
+            return None
+
+        volume_loss = abs(target.shape.Volume) - abs(wrapped.shape.Volume)
+        volume_limit = max(1.0e-6, abs(target.shape.Volume) * 1.0e-3)
+        if wrapped.status != "healthy" or volume_loss > volume_limit:
+            return None
+        if wrapped.shape.distToShape(other.shape)[0] <= 1.0e-7:
+            return None
+
+        return (wrapped, right) if target is left else (left, wrapped)
+
+The tested primitive cases produced healthy one-solid results and a gap equal
+to the requested trim size:
+
+    vertex contact   tiny sphere cut
+    edge contact     circular pipe cut along the section edge
+    planar face      two-sided extrusion of the common face
+
+For curved coincident faces, local face extrusion may fail.  That pair remains
+healthy-but-not-BOP-safe unless a later fallback is approved.  The current
+global inward offset should not run automatically after local trim failure.
+
+
+CHANGES INSIDE _repairCompoundParts
+-----------------------------------
+
+Keep the existing pair-fuse pass, but store the classified contact with each
+failure:
+
+    contact = self._classifyContact(left, right)
+    contact_type = "unknown" if contact is None else contact[0]
+    failed_pairs.append((left_index, right_index, pair_issues, contact_type))
+
+At the beginning of the failed-pair repair loop:
+
+    if contact_type in ("face", "near"):
+        candidate = self._fuzzyFusePair(left, right, tolerance)
+        if candidate is not None:
+            parts[left_index] = candidate
+            parts[right_index] = None
+            continue
+
+    if contact_type in ("edge", "vertex", "face"):
+        if require_bop_safe:
+            trimmed = self._trimContact(left, right, contact_type, tolerance)
+            if trimmed is not None:
+                parts[left_index], parts[right_index] = trimmed
+                continue
+
+        # Preserve a healthy tangent pair.  The final compound check records
+        # the contact and marks the compound not BOP-safe.
+        continue
+
+    if contact_type == "near":
+        # There is a real positive gap.  Preserve both solids when fuzzy fusion
+        # does not join them.
+        continue
+
+Only ``overlap`` and ``unknown`` failures continue into the current generalFuse
+refragment/discard workflow.
+
+The final group-building pass needs the same policy.  When a group fuse fails,
+classify the group/part contact.  Edge, vertex, and unresolved face contacts are
+separate groups instead of causing the part to be discarded.  Face and near
+contacts first use _fuzzyFusePair().  Local trim is used only when
+require_bop_safe is True.
+
+
+CHANGES TO FuseSolid
+--------------------
+
+After checking a new fuse result, replace the unconditional healthy return:
+
+    if result.status == "healthy":
+        return result
+
+with:
+
+    repairable_contacts = ("overlap", "face", "near", "unknown")
+    if result.status == "healthy" and any(contact[2] in repairable_contacts for contact in result.contacts):
+        if result.repair() is not None:
+            return result
+
+    if result.status == "healthy":
+        return result
+
+    if result.repair() is not None:
+        return result
+
+Thus face and near failures receive bounded fuzzy repair, while true edge and
+vertex tangencies are retained without geometry changes.
+
+The existing single-input fast path continues returning any healthy wrapper,
+including a healthy compound with ``bop_safe == False``.  That is correct for
+storage and export.
+
+
+BOP BOUNDARY CHANGES
+--------------------
+
+interferencia() in buildCAD.py must not pass an unsafe compound directly to
+common().  Expand unsafe wrappers and operate on child pairs:
+
+    cell_parts = cell.shape.parts if cell.shape.shape.ShapeType == "Compound" and not cell.shape.bop_safe else [cell.shape]
+    container_parts = container.shape.parts if container.shape.shape.ShapeType == "Compound" and not container.shape.bop_safe else [container.shape]
+    common_parts = [left.shape.common(right.shape) for left in cell_parts for right in container_parts]
+    return FuseSolid(common_parts)
+
+At the start of SplitSolid(), expand a non-BOP-safe compound before slice():
+
+    if base.base.shape.ShapeType == "Compound" and not base.base.bop_safe:
+        children = [SplitBase(part, base.knownSurf, base.orientation) for part in base.base.parts]
+        return SplitSolid(children, surfacesCut, cellObj, tolerance)
+
+Material fusion already passes wrappers through FuseSolid(), so it requires no
+additional boundary change.
+
+
+EXPORT BEHAVIOR
+---------------
+
+Export requires intrinsic topology health, not whole-shape BOP safety. A
+wrapper with ``status == "healthy"`` and ``bop_safe == False`` is therefore
+exported unchanged; export does not reject it, retry its fuse, or trim its
+contacts.
+
+At the current export boundaries, the wrapper is unwrapped to its TopoShape.
+The resulting STEP/FCStd geometry is a compound containing multiple healthy
+solid bodies. Edge- or vertex-touching members remain exactly as modeled, and
+an importing CAD program may display them as separate bodies beneath one
+compound/container.
+
+``bop_safe`` only changes later Boolean-operation behavior. Before using an
+unsafe compound as a BOP operand, its healthy child solids are expanded and
+processed individually. If a caller specifically requires one BOP-safe shape
+before export, it must request ``repair(require_bop_safe=True)`` explicitly;
+ordinary export does not make that destructive geometric change.
+
+
+COPY AND TRANSFORM METADATA
+---------------------------
+
+The TopoWrapper constructions in CadCell.copy() and transformSolid() must also
+pass:
+
+    bop_safe=self.shape.bop_safe
+    contacts=self.shape.contacts[:]
+
+Rigid transforms preserve health, contact dimension, pair indexes, and BOP
+safety.  replaceShape() continues invalidating all of them.
+
+
+TESTS TO ADD WITH THE PATCH
+---------------------------
+
+1. Face-touching boxes fuse into one healthy, BOP-safe solid.
+2. Near boxes retry bounded fuzzy generalFuse without exceeding the maximum.
+3. Edge-touching boxes return a healthy compound with bop_safe False and an
+   ``edge`` contact.
+4. Vertex-touching boxes and tangent spheres return healthy compounds with
+   bop_safe False and ``vertex`` contacts.
+5. Reusing those compounds for export does not trigger repair or rechecking.
+6. Passing those compounds to clipping expands their children before the BOP.
+7. require_bop_safe=True locally trims vertex and straight-edge contacts and
+   produces a healthy compound with bop_safe True.
+8. Failed local trim preserves the original healthy compound rather than
+   discarding a child.
+9. CadCell copy and rigid transform preserve bop_safe and contacts.
+10. The known healthy and degenerate single-cell conversions retain their
+    current behavior.

@@ -5,7 +5,7 @@ import numpy as np
 import Part
 
 from .buildSolidCell import BuildSolid
-from .fuseSolid import FuseSolid
+from .fuseSolid import FuseSolid, TopoWrapper
 from .remh import Cline
 from .Utils.booleanFunction import BoolSequence, outer_terms
 from .Utils.boundBox import solid_plane_box, myBox, BoxSettings
@@ -94,7 +94,11 @@ class CadCell:
             cpCell.CurrentTR = self.CurrentTR.submatrix(4)
 
         if self.shape is not None:
-            cpCell.shape = self.shape.copy()
+            shape = self.shape.shape.copy()
+            parts = None
+            if self.shape.parts is not None:
+                parts = [TopoWrapper(solid, status=part.status, issues=part.issues[:], bop_safe=part.bop_safe, contacts=part.contacts[:]) for solid, part in zip(shape.Solids, self.shape.parts)]
+            cpCell.shape = TopoWrapper(shape, parts, self.shape.status, self.shape.issues[:], self.shape.bop_safe, self.shape.contacts[:])
 
         return cpCell
 
@@ -173,12 +177,16 @@ class CadCell:
     def transformSolid(self, matrix, reverse=False):
         if not self.shape:
             return
-        shape = self.shape.copy()
+        original = self.shape
+        shape = original.shape.copy()
         if reverse:
             shape.transformShape(matrix.inverse())
         else:
             shape.transformShape(matrix)
-        self.shape = shape
+        parts = None
+        if original.parts is not None:
+            parts = [TopoWrapper(solid, status=part.status, issues=part.issues[:], bop_safe=part.bop_safe, contacts=part.contacts[:]) for solid, part in zip(shape.Solids, original.parts)]
+        self.shape = TopoWrapper(shape, parts, original.status, original.issues[:], original.bop_safe, original.contacts[:])
 
     def transformSurfaces(self, matrix):
         for s in self.surfaces.values():

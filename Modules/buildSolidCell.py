@@ -123,7 +123,7 @@ def BuildSolidParts(cell, base):
         return fullPart, cutPart
 
     if base:
-        boundBox = base.base.BoundBox
+        boundBox = base.base.shape.BoundBox
         if boundBox.XLength < 1e-6 or boundBox.YLength < 1e-6 or boundBox.ZLength < 1e-6:
             return [], []
     else:
@@ -142,7 +142,7 @@ def BuildSolidParts(cell, base):
 
     if not surfaces:
         print("not cutting surfaces")
-        return tuple(base.base), tuple()
+        return (base,), tuple()
 
     if base is None:
         cellBox = cell.makeBox()
@@ -195,7 +195,7 @@ def filterparts(parts, cell):
             process_part.append(p)
             continue
         cBox = myBox(cellBox.Box, "Forward")
-        pbb = p.base.BoundBox
+        pbb = p.base.shape.BoundBox
 
         pBox = myBox(pbb, "Forward")
         cBox.mult(pBox)
