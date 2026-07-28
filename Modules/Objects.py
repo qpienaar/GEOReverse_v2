@@ -175,18 +175,65 @@ class CadCell:
             s.buildShape(boundBox)
 
     def transformSolid(self, matrix, reverse=False):
-        if not self.shape:
+        if self.shape is None:
             return
-        original = self.shape
-        shape = original.shape.copy()
-        if reverse:
-            shape.transformShape(matrix.inverse())
-        else:
-            shape.transformShape(matrix)
-        parts = None
-        if original.parts is not None:
-            parts = [TopoWrapper(solid, status=part.status, issues=part.issues[:], bop_safe=part.bop_safe, contacts=part.contacts[:]) for solid, part in zip(shape.Solids, original.parts)]
-        self.shape = TopoWrapper(shape, parts, original.status, original.issues[:], original.bop_safe, original.contacts[:])
+
+        transformed_shape = self.shape.shape
+        if transformed_shape is None:
+            print(f"Discarding cell {self.name}: missing shape before transform")
+            self.shape = None
+            return
+        if transformed_shape.isNull():
+            print(f"Discarding cell {self.name}: null shape before transform")
+            self.shape = None
+            return
+
+        try:
+            if reverse:
+                transformed_shape.transformShape(matrix.inverse())
+            else:
+                transformed_shape.transformShape(matrix)
+        except Exception as error:
+            print(f"Discarding cell {self.name}: transform failed: {error}")
+            self.shape = None
+            return
+
+        if transformed_shape.isNull():
+            print(f"Discarding cell {self.name}: transform produced a null shape")
+            self.shape = None
+            return
+
+        transformed_parts = None
+        if transformed_shape.ShapeType == "Compound":
+            transformed_parts = []
+            for solid in transformed_shape.Solids:
+                if solid is None:
+                    continue
+                if solid.isNull():
+                    continue
+                transformed_parts.append(TopoWrapper(solid))
+
+        # Transform health must not inherit pre-transform cache entries.
+        transformed_wrapper = TopoWrapper(transformed_shape, transformed_parts)
+        try:
+            # check() updates status, issues, contacts, and bop_safe in place.
+            transformed_wrapper.check()
+        except Exception as error:
+            print(f"Discarding cell {self.name}: transformed-shape check failed: {error}")
+            self.shape = None
+            return
+
+        if transformed_wrapper.status != "healthy":
+            repaired = transformed_wrapper.repair()
+            if repaired is None:
+                issues = "; ".join(transformed_wrapper.issues)
+                if not issues:
+                    issues = "unknown topology error"
+                print(f"Discarding cell {self.name}: unhealthy transformed shape: {issues}")
+                self.shape = None
+                return
+
+        self.shape = transformed_wrapper
 
     def transformSurfaces(self, matrix):
         for s in self.surfaces.values():

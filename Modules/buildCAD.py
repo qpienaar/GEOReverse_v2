@@ -12,11 +12,96 @@ def interferencia(container, cell, mode="common"):
     """Clip a cell without passing unsafe compounds directly into a BOP."""
 
     if mode == "common":
-        cell_parts = cell.shape.parts if cell.shape.shape.ShapeType == "Compound" and cell.shape.bop_safe is False else [cell.shape]
-        container_parts = container.shape.parts if container.shape.shape.ShapeType == "Compound" and container.shape.bop_safe is False else [container.shape]
-        common_parts = [left.shape.common(right.shape) for left in cell_parts for right in container_parts]
-        common_parts = [part for part in common_parts if part.Solids]
-        return FuseSolid(common_parts) if common_parts else None
+        if cell.shape is None:
+            return None
+        if container.shape is None:
+            return None
+
+        cell_wrapper = cell.shape
+        container_wrapper = container.shape
+        cell_topology = cell_wrapper.shape
+        container_topology = container_wrapper.shape
+        if cell_topology is None:
+            return None
+        if container_topology is None:
+            return None
+        if cell_topology.isNull():
+            print(f"Skipping null cell intersection operand: cell={cell.name}")
+            return None
+        if container_topology.isNull():
+            print(f"Skipping null intersection operand: container={container.name}, cell={cell.name}")
+            return None
+
+        # Unsafe compounds are intersected child-by-child so the compound itself
+        # is never passed to an OpenCascade Boolean operation.
+        if cell_topology.ShapeType == "Compound":
+            if cell_wrapper.bop_safe is False:
+                cell_parts = cell_wrapper.parts
+            else:
+                cell_parts = [cell_wrapper]
+        else:
+            cell_parts = [cell_wrapper]
+
+        if container_topology.ShapeType == "Compound":
+            if container_wrapper.bop_safe is False:
+                container_parts = container_wrapper.parts
+            else:
+                container_parts = [container_wrapper]
+        else:
+            container_parts = [container_wrapper]
+
+        usable_cell_parts = []
+        if cell_parts is not None:
+            for part in cell_parts:
+                if part is None:
+                    continue
+                if part.shape is None:
+                    continue
+                if part.shape.isNull():
+                    continue
+                usable_cell_parts.append(part)
+
+        usable_container_parts = []
+        if container_parts is not None:
+            for part in container_parts:
+                if part is None:
+                    continue
+                if part.shape is None:
+                    continue
+                if part.shape.isNull():
+                    continue
+                usable_container_parts.append(part)
+
+        cell_parts = usable_cell_parts
+        container_parts = usable_container_parts
+        if not cell_parts:
+            print(f"Skipping intersection without usable cell operands: cell={cell.name}")
+            return None
+        if not container_parts:
+            print(f"Skipping intersection without usable container operands: container={container.name}, cell={cell.name}")
+            return None
+
+        common_parts = []
+        for left in cell_parts:
+            for right in container_parts:
+                try:
+                    common = left.shape.common(right.shape)
+                except Exception as error:
+                    print(f"Discarding failed intersection pair: container={container.name}, cell={cell.name}: {error}")
+                    continue
+                if common is None:
+                    continue
+                if common.isNull():
+                    continue
+                if not common.Solids:
+                    continue
+                common_parts.append(common)
+
+        # FuseSolid checks the complete surviving intersection. It repairs or
+        # discards unhealthy results and returns only a healthy wrapper.
+        if not common_parts:
+            return None
+        return FuseSolid(common_parts)
 
     Base = cell.shape.shape
     Tool = (container.shape.shape,)
@@ -163,9 +248,15 @@ def BuildUniverseCells(startInfo, ContainerCell, AllUniverses, universeCut=True)
 
         if ContainerCell.CurrentTR:
             cell.transformSolid(ContainerCell.CurrentTR)
+            if cell.shape is None:
+                fails.append(cell.name)
+                continue
 
         if universeCut and ContainerCell.shape:
             cell.shape = interferencia(ContainerCell, cell)
+            if cell.shape is None:
+                fails.append(cell.name)
+                continue
 
         if not cell.FILL or ContainerCell.level + 1 > levelMax:
             CADUniverse.append(cell)

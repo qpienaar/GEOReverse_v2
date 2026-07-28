@@ -78,7 +78,7 @@ def _splitWithRetry(base, surfaces, tolerance):
 
     volumeLimit = max(1.0e-6, abs(base.shape.Volume) * 5.0e-5)
     for magnitude in perturbations:
-        candidates = []
+        bestCandidate = None
         for toolIndex, surface in enumerate(surfaces):
             for delta in (magnitude, -magnitude):
                 tool = _perturbSurface(surface, delta, base.shape.BoundBox)
@@ -99,11 +99,11 @@ def _splitWithRetry(base, surfaces, tolerance):
                     continue
 
                 volumeError = abs(sum(abs(part.shape.Volume) for part in parts) - abs(base.shape.Volume))
-                if volumeError <= volumeLimit:
-                    candidates.append((volumeError, toolIndex, delta, parts))
+                if volumeError <= volumeLimit and (bestCandidate is None or volumeError < bestCandidate[0]):
+                    bestCandidate = (volumeError, toolIndex, delta, parts)
 
-        if candidates:
-            volumeError, toolIndex, delta, parts = min(candidates, key=lambda candidate: candidate[0])
+        if bestCandidate is not None:
+            volumeError, toolIndex, delta, parts = bestCandidate
             print(f"Split retry succeeded on surface {surfaces[toolIndex].id} with perturbation {delta:g}; volume error {volumeError:g}")
             return parts
 
