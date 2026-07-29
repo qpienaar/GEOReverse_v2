@@ -55,6 +55,23 @@ def _splitWithRetry(base, surfaces, tolerance):
     except Exception:
         originalParts = []
 
+    if not originalParts:
+        if base.status == "unchecked":
+            base.check()
+        if base.status != "healthy":
+            repaired = base.repair()
+            if repaired is None:
+                return []
+
+        try:
+            result = BOPTools.SplitAPI.slice(base.shape, tools, "Split", tolerance=tolerance)
+            originalParts = [TopoWrapper(solid) for solid in result.Solids]
+        except Exception:
+            return []
+
+        if not originalParts:
+            return []
+
     if Options.lazyTopologyChecks and originalParts:
         outputVolume = 0.0
         for part in originalParts:
@@ -78,7 +95,9 @@ def _splitWithRetry(base, surfaces, tolerance):
     if base.status == "unchecked":
         base.check()
     if base.status != "healthy":
-        return originalParts
+        repaired = base.repair()
+        if repaired is None:
+            return originalParts
 
     surfaceIds = ", ".join(f"{surface.id} ({surface.type})" for surface in surfaces)
     issues = list(dict.fromkeys(issue for part in originalParts for issue in part.issues))
