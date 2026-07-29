@@ -5,6 +5,7 @@ import FreeCAD
 import Part
 
 from .fuseSolid import FuseSolid, TopoWrapper
+from .data_class import Options
 
 
 class SplitBase:
@@ -46,7 +47,7 @@ def _perturbSurface(surface, delta, boundBox):
 
 
 def _splitWithRetry(base, surfaces, tolerance):
-    """Split a healthy base and retry unhealthy results with bounded perturbations."""
+    """Split a base and retry failed results with bounded perturbations."""
     tools = tuple(surface.shape for surface in surfaces)
     try:
         result = BOPTools.SplitAPI.slice(base.shape, tools, "Split", tolerance=tolerance)
@@ -54,12 +55,25 @@ def _splitWithRetry(base, surfaces, tolerance):
     except Exception:
         originalParts = []
 
+    if Options.lazyTopologyChecks and originalParts:
+        outputVolume = 0.0
+        for part in originalParts:
+            outputVolume += abs(part.shape.Volume)
+        volumeError = abs(outputVolume - abs(base.shape.Volume))
+        volumeLimit = max(1.0e-6, abs(base.shape.Volume) * 5.0e-5)
+        if volumeError <= volumeLimit:
+            return originalParts
+
     for part in originalParts:
         part.check()
-    if not originalParts:
-        return originalParts
-    if all(part.status == "healthy" for part in originalParts):
-        return originalParts
+    if not Options.lazyTopologyChecks and originalParts:
+        allHealthy = True
+        for part in originalParts:
+            if part.status != "healthy":
+                allHealthy = False
+                break
+        if allHealthy:
+            return originalParts
 
     if base.status == "unchecked":
         base.check()
@@ -178,6 +192,16 @@ def SplitSolid(base, surfacesCut, cellObj, tolerance=0.01):  # 1e-2
     Tools = tuple(s.shape for s in surfacesCut)
     if Tools[0] is not None:
         splitParts = _splitWithRetry(base.base, surfacesCut, tolerance)
+        if not splitParts and Options.lazyTopologyChecks and base.base.shape.ShapeType == "Compound":
+            if base.base.status == "unchecked":
+                base.base.check()
+            if base.base.status != "healthy" or base.base.bop_safe is not True:
+                base.base.repair(require_bop_safe=True)
+            if base.base.parts:
+                children = []
+                for part in base.base.parts:
+                    children.append(SplitBase(part, base.knownSurf, base.orientation))
+                return SplitSolid(children, surfacesCut, cellObj, tolerance)
         if not splitParts:
             splitParts = [base.base]
     else:
@@ -203,10 +227,19 @@ def SplitSolid(base, surfacesCut, cellObj, tolerance=0.01):  # 1e-2
         #  sol.exportStep('solid_{}{}.stp'.format(name,ii))
 
         if inSolid:
-            if wrapped.status != "healthy" and wrapped.repair() is None:
-                continue
+            if not Options.lazyTopologyChecks:
+                if wrapped.status == "unchecked":
+                    wrapped.check()
+                if wrapped.status != "healthy":
+                    repaired = wrapped.repair()
+                    if repaired is None:
+                        continue
 
             if wrapped.shape.ShapeType == "Compound":
+                if wrapped.parts is None:
+                    wrapped.parts = []
+                    for solid in wrapped.shape.Solids:
+                        wrapped.parts.append(TopoWrapper(solid))
                 fullPart.extend(SplitBase(part, pos, orientation) for part in wrapped.parts)
             else:
                 fullPart.append(SplitBase(wrapped, pos, orientation))
@@ -229,15 +262,18 @@ def updateSurfacesValues(position, surfaces, knownSurf):
 # Get the position of subregion with respect
 # all cutting surfaces
 def space_decomposition(parts, surfaces):
-    """Classify checked wrappers relative to the original splitting surfaces."""
+    """Classify wrappers relative to the original splitting surfaces."""
 
     component = []
     good_solids = []
     for part in parts:
-        if part.status == "unchecked":
-            part.check()
-        if part.status != "healthy" and part.repair() is None:
-            continue
+        if not Options.lazyTopologyChecks:
+            if part.status == "unchecked":
+                part.check()
+            if part.status != "healthy":
+                repaired = part.repair()
+                if repaired is None:
+                    continue
 
         c = part.shape
         if c.Volume < 1e-3:
@@ -246,12 +282,41 @@ def space_decomposition(parts, surfaces):
             else:
                 c.reverse()
                 print("Negative solid Volume", c.Volume)
+        classificationFailed = False
         Svalues = {}
-        point = point_inside(c)
-        if point == None:
-            continue  # point not found in solid (solid is surface or very thin can be source of lost particules in MCNP)
-        for surf in surfaces:
-            Svalues[surf.id] = surface_side(point, surf)
+        try:
+            point = point_inside(c)
+            if point is None:
+                classificationFailed = True
+            else:
+                for surf in surfaces:
+                    Svalues[surf.id] = surface_side(point, surf)
+        except Exception:
+            classificationFailed = True
+
+        if classificationFailed and Options.lazyTopologyChecks:
+            if part.status == "unchecked":
+                part.check()
+            if part.status != "healthy":
+                repaired = part.repair()
+                if repaired is None:
+                    continue
+
+            c = part.shape
+            Svalues = {}
+            try:
+                point = point_inside(c)
+                if point is None:
+                    classificationFailed = True
+                else:
+                    classificationFailed = False
+                    for surf in surfaces:
+                        Svalues[surf.id] = surface_side(point, surf)
+            except Exception:
+                classificationFailed = True
+
+        if classificationFailed:
+            continue
 
         component.append(Svalues)
         good_solids.append(part)

@@ -357,7 +357,10 @@ def split_solid_fast(solid, surf, box):
 
     if box:
         if surf.shape:
-            comsolid = BOPTools.SplitAPI.slice(solid, [surf.shape], "Split", tolerance=0)
+            try:
+                comsolid = BOPTools.SplitAPI.slice(solid, [surf.shape], "Split", tolerance=0)
+            except Exception:
+                return check_sign(solid, surf), None
         else:
             return check_sign(solid, surf), None
 

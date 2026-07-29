@@ -3,6 +3,7 @@ from tqdm import tqdm
 import FreeCAD
 import Part
 
+from .data_class import Options
 from .fuseSolid import FuseSolid
 from .Utils.booleanFunction import BoolSequence
 from .Utils.boundBox import myBox
@@ -87,13 +88,39 @@ def interferencia(container, cell, mode="common"):
                 try:
                     common = left.shape.common(right.shape)
                 except Exception as error:
-                    print(f"Discarding failed intersection pair: container={container.name}, cell={cell.name}: {error}")
-                    continue
+                    if not Options.lazyTopologyChecks:
+                        print(f"Discarding failed intersection pair: container={container.name}, cell={cell.name}: {error}")
+                        continue
+
+                    repair_failed = False
+                    for operand in (left, right):
+                        if operand.status == "unchecked":
+                            operand.check()
+                        needs_repair = operand.status != "healthy"
+                        if operand.shape.ShapeType == "Compound" and operand.bop_safe is not True:
+                            needs_repair = True
+                        if needs_repair:
+                            repaired = operand.repair(require_bop_safe=True)
+                            if repaired is None:
+                                repair_failed = True
+                    if repair_failed:
+                        print(f"Discarding failed intersection pair: container={container.name}, cell={cell.name}: {error}")
+                        continue
+
+                    try:
+                        common = left.shape.common(right.shape)
+                    except Exception:
+                        print(f"Discarding failed intersection pair: container={container.name}, cell={cell.name}: {error}")
+                        continue
                 if common is None:
                     continue
                 if common.isNull():
                     continue
                 if not common.Solids:
+                    continue
+                maximum_volume = min(abs(left.shape.Volume), abs(right.shape.Volume))
+                volume_limit = max(1.0e-6, maximum_volume * 1.0e-9)
+                if abs(common.Volume) > maximum_volume + volume_limit:
                     continue
                 common_parts.append(common)
 
@@ -106,7 +133,30 @@ def interferencia(container, cell, mode="common"):
     Base = cell.shape.shape
     Tool = (container.shape.shape,)
 
-    solids = BOPTools.SplitAPI.slice(Base, Tool, "Split", tolerance=0).Solids
+    try:
+        split_result = BOPTools.SplitAPI.slice(Base, Tool, "Split", tolerance=0)
+    except Exception:
+        if not Options.lazyTopologyChecks:
+            raise
+
+        for operand in (cell.shape, container.shape):
+            if operand.status == "unchecked":
+                operand.check()
+            needs_repair = operand.status != "healthy"
+            if operand.shape.ShapeType == "Compound" and operand.bop_safe is not True:
+                needs_repair = True
+            if needs_repair:
+                operand.repair(require_bop_safe=True)
+
+        Base = cell.shape.shape
+        Tool = (container.shape.shape,)
+        try:
+            split_result = BOPTools.SplitAPI.slice(Base, Tool, "Split", tolerance=0)
+        except Exception as error:
+            print(f"Discarding failed intersection split: container={container.name}, cell={cell.name}: {error}")
+            return None
+
+    solids = split_result.Solids
     cellParts = []
     for s in solids:
         if container.shape.shape.isInside(s.CenterOfMass, 0.0, False):
@@ -337,7 +387,18 @@ def makeMaterialTree(CADdoc, CADCells):
         featObj = CADdoc.addObject("Part::FeaturePython", f"material_{mat}")
         featObj.Label = f"Material_{mat}"
         result = FuseSolid(shapes)
-        featObj.Shape = Part.Shape() if result is None else result.shape
+        if result is not None and Options.lazyTopologyChecks:
+            if result.status == "unchecked":
+                result.check()
+            if result.status != "healthy":
+                repaired = result.repair()
+                if repaired is None:
+                    result = None
+
+        if result is None:
+            featObj.Shape = Part.Shape()
+        else:
+            featObj.Shape = result.shape
         groupObj.addObject(featObj)
         print(
             f"CAD export: finished material {mat} "

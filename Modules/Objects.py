@@ -5,6 +5,7 @@ import numpy as np
 import Part
 
 from .buildSolidCell import BuildSolid
+from .data_class import Options
 from .fuseSolid import FuseSolid, TopoWrapper
 from .remh import Cline
 from .Utils.booleanFunction import BoolSequence, outer_terms
@@ -188,6 +189,8 @@ class CadCell:
             self.shape = None
             return
 
+        original_volume = abs(transformed_shape.Volume)
+
         try:
             if reverse:
                 transformed_shape.transformShape(matrix.inverse())
@@ -215,6 +218,13 @@ class CadCell:
 
         # Transform health must not inherit pre-transform cache entries.
         transformed_wrapper = TopoWrapper(transformed_shape, transformed_parts)
+        transformed_volume = abs(transformed_shape.Volume)
+        volume_limit = max(1.0e-6, original_volume * 1.0e-9)
+        volume_error = abs(transformed_volume - original_volume)
+        if Options.lazyTopologyChecks and volume_error <= volume_limit:
+            self.shape = transformed_wrapper
+            return
+
         try:
             # check() updates status, issues, contacts, and bop_safe in place.
             transformed_wrapper.check()
@@ -222,6 +232,10 @@ class CadCell:
             print(f"Discarding cell {self.name}: transformed-shape check failed: {error}")
             self.shape = None
             return
+
+        if volume_error > volume_limit:
+            transformed_wrapper.status = "unhealthy"
+            transformed_wrapper.issues.append("Transform changed solid volume")
 
         if transformed_wrapper.status != "healthy":
             repaired = transformed_wrapper.repair()
@@ -455,8 +469,14 @@ class Cone:
                 self.shape = OneSheetCone
             else:
                 OtherSheet = Part.makeCone(0, R, length, apex, -axis, 360)
-                DoubleSheetCone = OneSheetCone.fuse([OtherSheet])
-                DoubleSheetCone.removeSplitter()
+                try:
+                    DoubleSheetCone = OneSheetCone.fuse([OtherSheet])
+                    DoubleSheetCone = DoubleSheetCone.removeSplitter()
+                    if DoubleSheetCone is None or DoubleSheetCone.isNull():
+                        raise RuntimeError("Double-sheet cone is null")
+                except Exception as error:
+                    message = f"Failed to construct double-sheet cone: {error}"
+                    raise RuntimeError(message) from error
                 self.shape = DoubleSheetCone
         else:
             center, axis, r1, r2 = self.params
@@ -504,8 +524,14 @@ class EllipticCone:
             self.shape = OneSheetCone
         else:
             OtherSheet = makeEllipticCone(apex, -axis, ra, radii, raxes, length)
-            DoubleSheetCone = OneSheetCone.fuse([OtherSheet])
-            DoubleSheetCone.removeSplitter()
+            try:
+                DoubleSheetCone = OneSheetCone.fuse([OtherSheet])
+                DoubleSheetCone = DoubleSheetCone.removeSplitter()
+                if DoubleSheetCone is None or DoubleSheetCone.isNull():
+                    raise RuntimeError("Elliptic double-sheet cone is null")
+            except Exception as error:
+                message = f"Failed to construct elliptic double-sheet cone: {error}"
+                raise RuntimeError(message) from error
             self.shape = DoubleSheetCone
 
 

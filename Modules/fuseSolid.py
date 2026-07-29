@@ -2,6 +2,8 @@
 
 import Part
 
+from .data_class import Options
+
 
 class TopoWrapper:
     """Keep a TopoShape together with its cached topology-health result."""
@@ -422,14 +424,32 @@ class TopoWrapper:
         return True
 
 
+def _usableUnion(shape, input_volume):
+    """Return whether a union has usable structure and a possible volume."""
+    if shape is None:
+        return False
+    if shape.isNull():
+        return False
+    if not shape.Solids:
+        return False
+
+    volume_limit = max(1.0e-6, input_volume * 1.0e-9)
+    return abs(shape.Volume) <= input_volume + volume_limit
+
+
 def FuseSolid(parts):
-    """Fuse shapes or wrappers and return a checked TopoWrapper, or None."""
+    """Fuse shapes or wrappers and return a TopoWrapper, or None."""
     parts = [part for part in parts if part is not None]
     parts = [part if isinstance(part, TopoWrapper) else TopoWrapper(part) for part in parts]
     parts = [part for part in parts if part.shape is not None and not part.shape.isNull()]
 
     if len(parts) == 1:
         part = parts[0]
+        if Options.lazyTopologyChecks:
+            if part.shape.ShapeType == "Compound" and part.parts is not None and len(part.parts) == 1:
+                return part.parts[0]
+            return part
+
         if part.status == "unchecked":
             part.check()
         if part.status != "healthy" and part.repair() is None:
@@ -438,6 +458,24 @@ def FuseSolid(parts):
         if part.shape.ShapeType == "Compound" and len(part.parts) == 1:
             return part.parts[0]
         return part
+
+    input_volume = 0.0
+    for part in parts:
+        input_volume += abs(part.shape.Volume)
+
+    if len(parts) > 1 and Options.lazyTopologyChecks:
+        try:
+            other_shapes = []
+            for part in parts[1:]:
+                other_shapes.append(part.shape)
+
+            fused_shape = parts[0].shape.fuse(other_shapes)
+            if _usableUnion(fused_shape, input_volume):
+                if fused_shape.ShapeType == "Compound" and len(fused_shape.Solids) == 1:
+                    fused_shape = fused_shape.Solids[0]
+                return TopoWrapper(fused_shape)
+        except Exception:
+            pass
 
     expanded = []
     for part in parts:
@@ -477,12 +515,16 @@ def FuseSolid(parts):
     except Exception as error:
         result = TopoWrapper(Part.makeCompound([part.shape for part in healthy_parts]), healthy_parts, "unhealthy", [str(error)])
         result.repair()
-        return result if result.status == "healthy" else None
+        if result.status == "healthy" and _usableUnion(result.shape, input_volume):
+            return result
+        return None
 
     if result.shape is None or result.shape.isNull():
         result = TopoWrapper(Part.makeCompound([part.shape for part in healthy_parts]), healthy_parts, "unhealthy", ["Null fuse result"])
         result.repair()
-        return result if result.status == "healthy" else None
+        if result.status == "healthy" and _usableUnion(result.shape, input_volume):
+            return result
+        return None
 
     if result.shape.ShapeType == "Compound" and len(result.shape.Solids) == 1:
         result = TopoWrapper(result.shape.Solids[0])
@@ -491,15 +533,17 @@ def FuseSolid(parts):
         result.check()
     repairable_contacts = ("overlap", "face", "near", "unknown")
     if result.status == "healthy" and any(contact[2] in repairable_contacts for contact in result.contacts):
-        if result.repair() is not None:
+        if result.repair() is not None and _usableUnion(result.shape, input_volume):
             return result
 
-    if result.status == "healthy":
+    if result.status == "healthy" and _usableUnion(result.shape, input_volume):
         return result
 
-    if result.repair() is not None:
+    if result.repair() is not None and _usableUnion(result.shape, input_volume):
         return result
 
     result = TopoWrapper(Part.makeCompound([part.shape for part in healthy_parts]), healthy_parts, "unhealthy", ["Fuse did not produce a healthy union"])
     result.repair()
-    return result if result.status == "healthy" else None
+    if result.status == "healthy" and _usableUnion(result.shape, input_volume):
+        return result
+    return None
