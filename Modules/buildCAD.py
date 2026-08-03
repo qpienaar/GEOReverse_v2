@@ -271,7 +271,7 @@ def BuildUniverseCells(startInfo, ContainerCell, AllUniverses, universeCut=True)
 
         external_box = get_container_box(ContainerCell)
 
-        debug = True
+        debug = False
         enlarge = get_boundbox_enlarge(ContainerCell)
         if debug:
             cell.build_BoundBox(external_box, enlarge=enlarge)
@@ -280,7 +280,7 @@ def BuildUniverseCells(startInfo, ContainerCell, AllUniverses, universeCut=True)
             else:
                 if cell.boundBox.Orientation == "Forward":
                     cell.externalBox = cell.boundBox
-                cell.buildShape(simplify=False)
+                cell.buildShape(simplify=True)
         else:
             try:
                 cell.build_BoundBox(external_box, enlarge=enlarge)
@@ -289,7 +289,7 @@ def BuildUniverseCells(startInfo, ContainerCell, AllUniverses, universeCut=True)
                 else:
                     if cell.boundBox.Orientation == "Forward":
                         cell.externalBox = cell.boundBox
-                    cell.buildShape(simplify=False)
+                    cell.buildShape(simplify=True)
             except:
                 fails.append(cell.name)
 
