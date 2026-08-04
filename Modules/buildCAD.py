@@ -268,6 +268,7 @@ def BuildUniverseCells(startInfo, ContainerCell, AllUniverses, universeCut=True)
         cell = NTcell.copy()
         if type(cell.definition) is not BoolSequence:
             cell.definition = BoolSequence(cell.definition.str)
+            cell.definition.simplify(None)
 
         external_box = get_container_box(ContainerCell)
 
@@ -280,7 +281,7 @@ def BuildUniverseCells(startInfo, ContainerCell, AllUniverses, universeCut=True)
             else:
                 if cell.boundBox.Orientation == "Forward":
                     cell.externalBox = cell.boundBox
-                cell.buildShape(simplify=True)
+                cell.buildShape()
         else:
             try:
                 cell.build_BoundBox(external_box, enlarge=enlarge)
@@ -289,7 +290,7 @@ def BuildUniverseCells(startInfo, ContainerCell, AllUniverses, universeCut=True)
                 else:
                     if cell.boundBox.Orientation == "Forward":
                         cell.externalBox = cell.boundBox
-                    cell.buildShape(simplify=True)
+                    cell.buildShape()
             except:
                 fails.append(cell.name)
 
