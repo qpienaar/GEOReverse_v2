@@ -81,7 +81,7 @@ def _splitWithRetry(base, surfaces, tolerance):
         for part in originalParts:
             outputVolume += abs(part.shape.Volume)
         volumeError = abs(outputVolume - abs(base.shape.Volume))
-        volumeLimit = max(1.0e-6, abs(base.shape.Volume) * 5.0e-5)
+        volumeLimit = max(1.0e-6, abs(base.shape.Volume) * 5.0e-4)
         if volumeError <= volumeLimit:
             return originalParts
 
@@ -113,7 +113,7 @@ def _splitWithRetry(base, surfaces, tolerance):
     if maxPerturbation > 0 and not perturbations:
         perturbations = (maxPerturbation,)
 
-    volumeLimit = max(1.0e-6, abs(base.shape.Volume) * 5.0e-5)
+    volumeLimit = max(1.0e-6, abs(base.shape.Volume) * 5.0e-4)
     for magnitude in perturbations:
         bestCandidate = None
         for toolIndex, surface in enumerate(surfaces):

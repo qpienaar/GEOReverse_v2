@@ -111,6 +111,7 @@ class CsgToCad:
             UnivCell.externalBox = self.universe_box
         else:
             UnivCell.definition = BoolSequence(UnivCell.definition.str)
+            UnivCell.definition.simplify(None)
 
             UnivCell.build_BoundBox(self.universe_box, enlarge=0.2)
             if UnivCell.boundBox.Orientation == "Forward" and UnivCell.boundBox.Box is None:
@@ -126,10 +127,10 @@ class CsgToCad:
 
             debug = True
             if debug:
-                UnivCell.buildShape(simplify=False)
+                UnivCell.buildShape()
             else:
                 try:
-                    UnivCell.buildShape(simplify=False)
+                    UnivCell.buildShape()
                 except:
                     print(f"fail converting cell {UnivCell.name}")
 
