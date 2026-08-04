@@ -47,7 +47,11 @@ def _perturbSurface(surface, delta, boundBox):
 
 
 def _splitWithRetry(base, surfaces, tolerance):
-    """Split a base and retry failed results with bounded perturbations."""
+    """Split a base and retry failed results with bounded perturbations.
+
+    Return None when lazy-mode retries are exhausted so the caller can discard
+    the failed base instead of treating it as an unsplit result.
+    """
     tools = tuple(surface.shape for surface in surfaces)
     try:
         result = BOPTools.SplitAPI.slice(base.shape, tools, "Split", tolerance=tolerance)
@@ -140,6 +144,10 @@ def _splitWithRetry(base, surfaces, tolerance):
             print(f"Split retry succeeded on surface {surfaces[toolIndex].id} with perturbation {delta:g}; volume error {volumeError:g}")
             return parts
 
+    if Options.lazyTopologyChecks:
+        print("Split retry failed; discarding the affected part")
+        return None
+
     print("Split retry failed; keeping the original fragments for repair or discard")
     return originalParts
 
@@ -211,6 +219,8 @@ def SplitSolid(base, surfacesCut, cellObj, tolerance=0.01):  # 1e-2
     Tools = tuple(s.shape for s in surfacesCut)
     if Tools[0] is not None:
         splitParts = _splitWithRetry(base.base, surfacesCut, tolerance)
+        if splitParts is None:
+            return fullPart, cutPart
         if not splitParts and Options.lazyTopologyChecks and base.base.shape.ShapeType == "Compound":
             if base.base.status == "unchecked":
                 base.base.check()

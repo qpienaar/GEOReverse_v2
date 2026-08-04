@@ -369,37 +369,33 @@ def makeMaterialTree(CADdoc, CADCells):
     groupObj = CADdoc.addObject("App::Part", "Materials")
     groupObj.Label = f"Universe_{label[1]}_Container_{label[0]}_Fused"
 
-    materialShapes = {}
+    materialSolids = {}
     for cell in iterLeafCells(CADCells):
         if cell.shape is None:
             continue
-        if cell.MAT not in materialShapes:
-            materialShapes[cell.MAT] = []
-        materialShapes[cell.MAT].append(cell.shape)
 
-    sorted_materials = sorted(materialShapes.items())
+        shape = cell.shape.shape
+        if shape is None or shape.isNull():
+            continue
+
+        cellSolids = shape.Solids
+        if not cellSolids:
+            continue
+
+        solids = materialSolids.setdefault(cell.MAT, [])
+        solids.extend(cellSolids)
+
+    sorted_materials = sorted(materialSolids.items())
     material_count = len(sorted_materials)
-    for index, (mat, shapes) in enumerate(sorted_materials, start=1):
+    for index, (mat, solids) in enumerate(sorted_materials, start=1):
         print(
-            f"CAD export: fusing material {mat} "
-            f"({index}/{material_count}) from {len(shapes)} shapes",
+            f"CAD export: assembling material {mat} "
+            f"({index}/{material_count}) from {len(solids)} solids",
             flush=True,
         )
         featObj = CADdoc.addObject("Part::FeaturePython", f"material_{mat}")
         featObj.Label = f"Material_{mat}"
-        result = FuseSolid(shapes)
-        if result is not None and Options.lazyTopologyChecks:
-            if result.status == "unchecked":
-                result.check()
-            if result.status != "healthy":
-                repaired = result.repair()
-                if repaired is None:
-                    result = None
-
-        if result is None:
-            featObj.Shape = Part.Shape()
-        else:
-            featObj.Shape = result.shape
+        featObj.Shape = Part.makeCompound(solids)
         groupObj.addObject(featObj)
         print(
             f"CAD export: finished material {mat} "
