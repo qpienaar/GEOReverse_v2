@@ -5,6 +5,48 @@ import Part
 from .data_class import Options
 
 
+def _boundingBoxGroups(parts):
+    """Group parts by transitive intersection of existing bounding boxes."""
+    if not parts:
+        return []
+    if len(parts) == 1:
+        return [parts]
+
+    parent = list(range(len(parts)))
+
+    def find_root(index):
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    def merge_groups(left_index, right_index):
+        left_root = find_root(left_index)
+        right_root = find_root(right_index)
+        if left_root != right_root:
+            parent[right_root] = left_root
+
+    boxes = [part.shape.BoundBox for part in parts]
+    for left_index, left_box in enumerate(boxes):
+        for right_index in range(left_index + 1, len(boxes)):
+            if left_box.intersect(boxes[right_index]):
+                merge_groups(left_index, right_index)
+
+    groups_by_root = {}
+    root_order = []
+    for index, part in enumerate(parts):
+        root = find_root(index)
+        if root not in groups_by_root:
+            groups_by_root[root] = []
+            root_order.append(root)
+        groups_by_root[root].append(part)
+
+    groups = []
+    for root in root_order:
+        groups.append(groups_by_root[root])
+    return groups
+
+
 class TopoWrapper:
     """Keep a TopoShape together with its cached topology-health result."""
 
@@ -38,6 +80,10 @@ class TopoWrapper:
 
     def repair(self, tolerance=1.0e-4, require_bop_safe=False):
         """Repair topology and optionally force a compound to become BOP-safe."""
+        if Options.lazyTopologyChecks and self.shape.ShapeType == "Compound" and self.status != "healthy":
+            # Avoid _checkCompound()'s all-pairs scan in the lazy path.
+            return self._repairCompound(tolerance, require_bop_safe)
+
         if self.status == "unchecked":
             self.check()
 
@@ -93,8 +139,13 @@ class TopoWrapper:
 
         self.contacts = []
         for left_index, left in enumerate(self.parts or []):
+            left_box = left.shape.BoundBox
             for right_index in range(left_index + 1, len(self.parts)):
-                contact = self._classifyContact(left, self.parts[right_index], tolerance)
+                right = self.parts[right_index]
+                if not left_box.intersect(right.shape.BoundBox):
+                    continue
+
+                contact = self._classifyContact(left, right, tolerance)
                 if contact is not None:
                     self.contacts.append((left_index, right_index, contact[0], contact[1]))
 
@@ -194,7 +245,7 @@ class TopoWrapper:
         return None
 
     def _repairCompound(self, tolerance, require_bop_safe=False):
-        """Run contact-aware repair on the cached child wrappers."""
+        """Repair connected child groups and preserve disconnected parts."""
         if self.parts is None:
             self.parts = [TopoWrapper(solid) for solid in self.shape.Solids]
 
@@ -202,9 +253,15 @@ class TopoWrapper:
         for part in self.parts:
             if part.status == "unchecked":
                 part.check()
-            if part.status != "healthy" and part.repair() is None:
-                print("Discarding unhealthy compound part:", "; ".join(part.issues))
-                continue
+
+            if part.status != "healthy":
+                if Options.lazyTopologyChecks:
+                    print("Discarding unhealthy compound part in lazy mode:", "; ".join(part.issues))
+                    continue
+
+                if part.repair() is None:
+                    print("Discarding unhealthy compound part:", "; ".join(part.issues))
+                    continue
 
             if part.shape.ShapeType == "Compound":
                 healthy_parts.extend(part.parts)
@@ -214,14 +271,36 @@ class TopoWrapper:
         if not healthy_parts:
             return None
 
-        repaired_parts = self._repairCompoundParts(healthy_parts, tolerance, require_bop_safe)
+        groups = _boundingBoxGroups(healthy_parts)
+        repaired_parts = []
+        unresolved_lazy_fuse = False
+
+        for group in groups:
+            group_result = self._repairCompoundParts(group, tolerance, require_bop_safe)
+            if not group_result:
+                continue
+            if Options.lazyTopologyChecks and len(group_result) > 1:
+                unresolved_lazy_fuse = True
+            repaired_parts.extend(group_result)
+
         if not repaired_parts:
             return None
 
         if len(repaired_parts) == 1:
             result = repaired_parts[0]
+        elif Options.lazyTopologyChecks:
+            result_bop_safe = True
+            if unresolved_lazy_fuse:
+                result_bop_safe = False
+            for part in repaired_parts:
+                if part.bop_safe is not True:
+                    result_bop_safe = False
+                    break
+            result_shape = Part.makeCompound([part.shape for part in repaired_parts])
+            result = TopoWrapper(result_shape, repaired_parts, "healthy", [], result_bop_safe, [])
         else:
             result = TopoWrapper(Part.makeCompound([part.shape for part in repaired_parts]), repaired_parts)
+            result.check()
 
         if result.status == "unchecked":
             result.check()
@@ -322,16 +401,62 @@ class TopoWrapper:
         return None
 
     def _repairCompoundParts(self, parts, tolerance, require_bop_safe=False):
-        """Repair failed pair interfaces without discarding healthy tangencies."""
-        parts = list(parts)
+        """Process one bounding-box-connected group into usable parts."""
+        if len(parts) < 2:
+            return parts
+        parts = parts.copy()
+
+        if Options.lazyTopologyChecks:
+            aggregate = parts[0]
+            residual_parts = []
+
+            for part in parts[1:]:
+                if not aggregate.shape.BoundBox.intersect(part.shape.BoundBox):
+                    residual_parts.append(part)
+                    continue
+
+                input_volume = abs(aggregate.shape.Volume) + abs(part.shape.Volume)
+                try:
+                    fused_shape = aggregate.shape.fuse(part.shape)
+                except Exception:
+                    residual_parts.append(part)
+                    continue
+
+                if fused_shape is None or fused_shape.isNull():
+                    residual_parts.append(part)
+                    continue
+                if not _usableUnion(fused_shape, input_volume):
+                    residual_parts.append(part)
+                    continue
+                if fused_shape.ShapeType == "Compound" and len(fused_shape.Solids) == 1:
+                    fused_shape = fused_shape.Solids[0]
+                if fused_shape.ShapeType != "Solid":
+                    residual_parts.append(part)
+                    continue
+
+                fused_wrapper = TopoWrapper(fused_shape)
+                fused_wrapper.check()
+                if fused_wrapper.status != "healthy":
+                    residual_parts.append(part)
+                    continue
+
+                # fuse() returned a new union containing aggregate and part.
+                aggregate = fused_wrapper
+
+            return [aggregate] + residual_parts
+
         contact_tolerance = 1.0e-7
 
         while len(parts) > 1:
             changed = False
             unresolved_pairs = []
             for left_index, left in enumerate(parts):
+                left_box = left.shape.BoundBox
                 for right_index in range(left_index + 1, len(parts)):
                     right = parts[right_index]
+                    if not left_box.intersect(right.shape.BoundBox):
+                        continue
+
                     contact = self._classifyContact(left, right, contact_tolerance, tolerance)
                     if contact is None:
                         continue
@@ -437,6 +562,15 @@ def _usableUnion(shape, input_volume):
     return abs(shape.Volume) <= input_volume + volume_limit
 
 
+def _usableWrappedUnion(result, input_volume):
+    """Accept a healthy lazy compound without using its overlap-counted volume."""
+    if result is None or result.status != "healthy":
+        return False
+    if Options.lazyTopologyChecks and result.shape.ShapeType == "Compound" and result.parts is not None:
+        return True
+    return _usableUnion(result.shape, input_volume)
+
+
 def FuseSolid(parts):
     """Fuse shapes or wrappers and return a TopoWrapper, or None."""
     parts = [part for part in parts if part is not None]
@@ -483,6 +617,12 @@ def FuseSolid(parts):
             expanded.append(part)
             continue
 
+        if Options.lazyTopologyChecks:
+            if part.parts is None:
+                part.parts = [TopoWrapper(solid) for solid in part.shape.Solids]
+            expanded.extend(part.parts)
+            continue
+
         if part.status == "unchecked":
             part.check()
         if part.status == "healthy":
@@ -499,9 +639,16 @@ def FuseSolid(parts):
     for part in parts:
         if part.status == "unchecked":
             part.check()
-        if part.status != "healthy" and part.repair() is None:
-            print("Discarding unhealthy part:", "; ".join(part.issues))
-            continue
+
+        if part.status != "healthy":
+            if Options.lazyTopologyChecks:
+                print("Discarding unhealthy part in lazy mode:", "; ".join(part.issues))
+                continue
+
+            if part.repair() is None:
+                print("Discarding unhealthy part:", "; ".join(part.issues))
+                continue
+
         healthy_parts.append(part)
 
     if not healthy_parts:
@@ -515,14 +662,14 @@ def FuseSolid(parts):
     except Exception as error:
         result = TopoWrapper(Part.makeCompound([part.shape for part in healthy_parts]), healthy_parts, "unhealthy", [str(error)])
         result.repair()
-        if result.status == "healthy" and _usableUnion(result.shape, input_volume):
+        if _usableWrappedUnion(result, input_volume):
             return result
         return None
 
     if result.shape is None or result.shape.isNull():
         result = TopoWrapper(Part.makeCompound([part.shape for part in healthy_parts]), healthy_parts, "unhealthy", ["Null fuse result"])
         result.repair()
-        if result.status == "healthy" and _usableUnion(result.shape, input_volume):
+        if _usableWrappedUnion(result, input_volume):
             return result
         return None
 
@@ -530,20 +677,21 @@ def FuseSolid(parts):
         result = TopoWrapper(result.shape.Solids[0])
 
     if result.status == "unchecked":
-        result.check()
+        if not (Options.lazyTopologyChecks and result.shape.ShapeType == "Compound"):
+            result.check()
     repairable_contacts = ("overlap", "face", "near", "unknown")
     if result.status == "healthy" and any(contact[2] in repairable_contacts for contact in result.contacts):
-        if result.repair() is not None and _usableUnion(result.shape, input_volume):
+        if result.repair() is not None and _usableWrappedUnion(result, input_volume):
             return result
 
-    if result.status == "healthy" and _usableUnion(result.shape, input_volume):
+    if _usableWrappedUnion(result, input_volume):
         return result
 
-    if result.repair() is not None and _usableUnion(result.shape, input_volume):
+    if result.repair() is not None and _usableWrappedUnion(result, input_volume):
         return result
 
     result = TopoWrapper(Part.makeCompound([part.shape for part in healthy_parts]), healthy_parts, "unhealthy", ["Fuse did not produce a healthy union"])
     result.repair()
-    if result.status == "healthy" and _usableUnion(result.shape, input_volume):
+    if _usableWrappedUnion(result, input_volume):
         return result
     return None

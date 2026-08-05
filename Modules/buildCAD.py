@@ -33,6 +33,11 @@ def interferencia(container, cell, mode="common"):
             print(f"Skipping null intersection operand: container={container.name}, cell={cell.name}")
             return None
 
+        # Reject disjoint operands before asking OpenCascade to perform an
+        # expensive Boolean intersection.
+        if not cell_topology.BoundBox.intersect(container_topology.BoundBox):
+            return None
+
         # Unsafe compounds are intersected child-by-child so the compound itself
         # is never passed to an OpenCascade Boolean operation.
         if cell_topology.ShapeType == "Compound":
@@ -84,9 +89,15 @@ def interferencia(container, cell, mode="common"):
 
         common_parts = []
         for left in cell_parts:
+            left_shape = left.shape
+            left_box = left_shape.BoundBox
             for right in container_parts:
+                right_shape = right.shape
+                if not left_box.intersect(right_shape.BoundBox):
+                    continue
+
                 try:
-                    common = left.shape.common(right.shape)
+                    common = left_shape.common(right_shape)
                 except Exception as error:
                     if not Options.lazyTopologyChecks:
                         print(f"Discarding failed intersection pair: container={container.name}, cell={cell.name}: {error}")
@@ -108,7 +119,14 @@ def interferencia(container, cell, mode="common"):
                         continue
 
                     try:
-                        common = left.shape.common(right.shape)
+                        # Repair can replace either wrapped shape, so refresh
+                        # the cached references before retrying the Boolean.
+                        left_shape = left.shape
+                        left_box = left_shape.BoundBox
+                        right_shape = right.shape
+                        if not left_box.intersect(right_shape.BoundBox):
+                            continue
+                        common = left_shape.common(right_shape)
                     except Exception:
                         print(f"Discarding failed intersection pair: container={container.name}, cell={cell.name}: {error}")
                         continue
@@ -118,7 +136,7 @@ def interferencia(container, cell, mode="common"):
                     continue
                 if not common.Solids:
                     continue
-                maximum_volume = min(abs(left.shape.Volume), abs(right.shape.Volume))
+                maximum_volume = min(abs(left_shape.Volume), abs(right_shape.Volume))
                 volume_limit = max(1.0e-6, maximum_volume * 1.0e-9)
                 if abs(common.Volume) > maximum_volume + volume_limit:
                     continue
