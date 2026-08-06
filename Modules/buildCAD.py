@@ -414,7 +414,7 @@ def makeMaterialTree(CADdoc, CADCells, fuse_materials=False):
         featObj = CADdoc.addObject("Part::FeaturePython", f"material_{mat}")
         featObj.Label = f"Material_{mat}"
         if fuse_materials and len(solids) > 1:
-            material_shape = solids[0].fuse(solids[1:])
+            material_shape = solids[0].fuse(solids[1:]).removeSplitter()
             if material_shape is None or material_shape.isNull():
                 raise RuntimeError(f"Failed to fuse material {mat}")
             featObj.Shape = material_shape
