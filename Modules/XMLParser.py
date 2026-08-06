@@ -100,14 +100,30 @@ class LatticeCard:
             for j in range(ny):
                 for i in range(nx):
                     pos = j * nx + i
-                    self.cells.append(self.__makeCell__(universes[pos], lower_left, pitch, (i, j)))
+                    # OpenMC serializes rectangular-lattice rows from maximum
+                    # y to minimum y. Convert the serialized row index back to
+                    # the physical y index before computing the translation.
+                    physical_j = ny - 1 - j
+                    self.cells.append(
+                        self.__makeCell__(
+                            universes[pos], lower_left, pitch, (i, physical_j)
+                        )
+                    )
         else:
             nx, ny, nz = dimensions
             for k in range(nz):
                 for j in range(ny):
                     for i in range(nx):
                         pos = k * nx * ny + j * nx + i
-                        self.cells.append(self.__makeCell__(universes[pos], lower_left, pitch, (i, j, k)))
+                        physical_j = ny - 1 - j
+                        self.cells.append(
+                            self.__makeCell__(
+                                universes[pos],
+                                lower_left,
+                                pitch,
+                                (i, physical_j, k),
+                            )
+                        )
 
     def __makeCell__(self, universe, lower_left, pitch, indices):
         cell = CellCard(
