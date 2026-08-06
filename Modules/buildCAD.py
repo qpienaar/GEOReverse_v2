@@ -382,7 +382,7 @@ def iterLeafCells(CADCells):
         yield CADCells
 
 
-def makeMaterialTree(CADdoc, CADCells):
+def makeMaterialTree(CADdoc, CADCells, fuse_materials=False):
     label = CADCells[0]
     groupObj = CADdoc.addObject("App::Part", "Materials")
     groupObj.Label = f"Universe_{label[1]}_Container_{label[0]}_Fused"
@@ -413,7 +413,13 @@ def makeMaterialTree(CADdoc, CADCells):
         )
         featObj = CADdoc.addObject("Part::FeaturePython", f"material_{mat}")
         featObj.Label = f"Material_{mat}"
-        featObj.Shape = Part.makeCompound(solids)
+        if fuse_materials and len(solids) > 1:
+            material_shape = solids[0].fuse(solids[1:])
+            if material_shape is None or material_shape.isNull():
+                raise RuntimeError(f"Failed to fuse material {mat}")
+            featObj.Shape = material_shape
+        else:
+            featObj.Shape = Part.makeCompound(solids)
         groupObj.addObject(featObj)
         print(
             f"CAD export: finished material {mat} "

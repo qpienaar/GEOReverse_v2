@@ -213,13 +213,16 @@ class CsgToCad:
         if fails:
             print("failed cell conversion:", fails)
 
-    def export_cad(self, output_filename: str = ""):
+    def export_cad(self, output_filename: str = "", fuse_materials: bool = False):
         """export the CSG geometry in OpenMC or MCNP format to a CAD model.
 
         Args:
             output_filename (str, optional): The filename stem and path of the output file created.
                 Two files will be created with the '.step' suffix and one with the 'FCStd' suffix.
                 Defaults to name of the csg file + stp.
+            fuse_materials (bool, optional): Boolean-fuse the solids belonging to
+                each material instead of grouping them in a compound. Defaults to
+                False.
         """
 
         if output_filename == "":
@@ -245,7 +248,9 @@ class CsgToCad:
 
         for CAD in self.buildCAD_list:
             print("CAD export: building material tree", flush=True)
-            CADobj.addObject(makeMaterialTree(CADdoc, CAD))
+            CADobj.addObject(
+                makeMaterialTree(CADdoc, CAD, fuse_materials=fuse_materials)
+            )
 
         print(f"CAD export: writing STEP file {output_filename + suffix}", flush=True)
         Import.export(CADdoc.Objects[0:1], output_filename + suffix)
